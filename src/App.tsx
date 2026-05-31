@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useCallback, useRef } from 'react';
 import { create } from 'zustand';
 import dayjs from 'dayjs';
 import isoWeek from 'dayjs/plugin/isoWeek';
@@ -24,6 +24,7 @@ const useStore = create((set, get) => ({
   deleteProject: (id: string) => { set((s: any) => ({ projects: s.projects.filter((p: any) => p.id !== id), allocations: s.allocations.filter((a: any) => a.projectId !== id) })); (get() as any)._save(); },
   addAllocation: (a: any) => { set((s: any) => ({ allocations: [...s.allocations, { ...a, id: crypto.randomUUID() }] })); (get() as any)._save(); },
   updateAllocation: (id: string, data: any) => { set((s: any) => ({ allocations: s.allocations.map((a: any) => a.id === id ? { ...a, ...data } : a) })); (get() as any)._save(); },
+  moveAllocation: (id: string, days: number) => { set((s: any) => ({ allocations: s.allocations.map((a: any) => { if (a.id !== id) return a; const start = dayjs(a.startDate).add(days, 'day'); const end = dayjs(a.endDate).add(days, 'day'); return { ...a, startDate: start.format('YYYY-MM-DD'), endDate: end.format('YYYY-MM-DD') }; }) })); (get() as any)._save(); },
   deleteAllocation: (id: string) => { set((s: any) => ({ allocations: s.allocations.filter((a: any) => a.id !== id) })); (get() as any)._save(); },
   setViewMode: (m: string) => set({ viewMode: m }),
   setSidebarOpen: (o: boolean) => set({ sidebarOpen: o }),
@@ -111,8 +112,10 @@ function TimelineView() {
   const addAllocation = useStore((s: any) => s.addAllocation);
   const deleteAllocation = useStore((s: any) => s.deleteAllocation);
   const updateAllocation = useStore((s: any) => s.updateAllocation);
+  const moveAllocation = useStore((s: any) => s.moveAllocation);
   const [showModal, setShowModal] = useState<any>(null);
   const [editId, setEditId] = useState<string|null>(null);
+  const dragRef = useRef<{allocId:string;startX:number}|null>(null);
 
   const startDate = useMemo(() => dayjs().subtract(4, 'week').toDate(), []);
   const periods = useMemo(() => generateWeeks(startDate, 26), [startDate]);
@@ -122,6 +125,30 @@ function TimelineView() {
     const weekEnd = dayjs(week).endOf('isoWeek').format('YYYY-MM-DD');
     return allocations.filter((a: any) => a.personId === pid && a.startDate <= weekEnd && a.endDate >= week).reduce((s: number, a: any) => s + a.effortPercent, 0);
   };
+
+  const handleDragStart = useCallback((allocId: string, e: React.DragEvent) => {
+    dragRef.current = { allocId, startX: e.clientX };
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', allocId);
+  }, []);
+
+  const handleDrop = useCallback((targetWeek: string, e: React.DragEvent) => {
+    e.preventDefault();
+    const allocId = e.dataTransfer.getData('text/plain');
+    if (!allocId) return;
+    const alloc = allocations.find((a: any) => a.id === allocId);
+    if (!alloc) return;
+    const currentWeek = dayjs(alloc.startDate).startOf('isoWeek').format('YYYY-MM-DD');
+    if (currentWeek === targetWeek) return;
+    const daysDiff = dayjs(targetWeek).diff(dayjs(currentWeek), 'day');
+    moveAllocation(allocId, daysDiff);
+    dragRef.current = null;
+  }, [allocations, moveAllocation]);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  }, []);
 
   return (
     <div className="h-full flex flex-col">
@@ -141,7 +168,7 @@ function TimelineView() {
             <div key={person.id} className="flex border-b border-gray-200">
               <div className="w-32 shrink-0 border-r border-gray-200 px-3 flex items-center gap-2" style={{height:rowH}}><span className="w-2 h-2 rounded-full" style={{background:person.color}}/><span className="text-sm truncate">{person.name}</span></div>
               <div className="flex overflow-x-auto relative" style={{height:rowH}}>
-                {periods.map(week => { const load = getLoad(person.id, week); const bg = load>100?'#FEE2E2':load>80?'#FEF3C7':load>0?'#ECFDF5':''; return <div key={week} className={week===today?'bg-indigo-50':''} style={{background:bg||undefined,minWidth:CELL_W,height:rowH}} onClick={()=>setShowModal({personId:person.id,date:week})}/>; })}
+                {periods.map(week => { const load = getLoad(person.id, week); const bg = load>100?'#FEE2E2':load>80?'#FEF3C7':load>0?'#ECFDF5':''; return <div key={week} className={week===today?'bg-indigo-50':''} style={{background:bg||undefined,minWidth:CELL_W,height:rowH}} onClick={()=>setShowModal({personId:person.id,date:week})} onDragOver={handleDragOver} onDrop={(e)=>handleDrop(week,e)}/>; })}
                 {lanes.map((lane, li) => lane.map((alloc: any) => {
                   const proj = projects.find((p: any) => p.id === alloc.projectId);
                   if (!proj) return null;
@@ -149,7 +176,7 @@ function TimelineView() {
                   if (si < 0) return null;
                   const ei = periods.indexOf(dayjs(alloc.endDate).startOf('isoWeek').format('YYYY-MM-DD'));
                   if (ei < 0) return null;
-                  return <div key={alloc.id} className="absolute h-6 rounded cursor-pointer flex items-center px-1.5 text-white text-xs truncate hover:shadow-lg hover:z-10" style={{left:si*CELL_W,width:(ei-si+1)*CELL_W,top:li*ROW_H+6,background:proj.color}} title={proj.name+' - '+alloc.requirementName+' ('+alloc.effortPercent+'%)'} onClick={e=>{e.stopPropagation();setEditId(alloc.id);}}>{proj.name} {alloc.effortPercent}%</div>;
+                  return <div key={alloc.id} draggable onDragStart={(e)=>handleDragStart(alloc.id,e)} className="absolute h-6 rounded cursor-grab active:cursor-grabbing flex items-center px-1.5 text-white text-xs truncate hover:shadow-lg hover:z-10" style={{left:si*CELL_W,width:(ei-si+1)*CELL_W,top:li*ROW_H+6,background:proj.color}} title={proj.name+' - '+alloc.requirementName+' ('+alloc.effortPercent+'%)'} onClick={e=>{e.stopPropagation();setEditId(alloc.id);}}>{proj.name} {alloc.effortPercent}%</div>;
                 }))}
               </div>
             </div>
@@ -175,6 +202,41 @@ function NewAlloc({personId,date,onClose}:{personId:string;date:string;onClose:(
   const [startDate, setStartDate] = useState(date);
   const [endDate, setEndDate] = useState(date);
   const [effort, setEffort] = useState(100);
+  const [duration, setDuration] = useState('custom');
+  
+  const handleDurationChange = (d: string) => {
+    setDuration(d);
+    if (d === 'custom') return;
+    const start = dayjs(startDate);
+    let end;
+    switch(d) {
+      case '1w': end = start.add(1, 'week'); break;
+      case '2w': end = start.add(2, 'week'); break;
+      case '1m': end = start.add(1, 'month'); break;
+      case '2m': end = start.add(2, 'month'); break;
+      case '3m': end = start.add(3, 'month'); break;
+      default: return;
+    }
+    setEndDate(end.format('YYYY-MM-DD'));
+  };
+  
+  const handleStartDateChange = (d: string) => {
+    setStartDate(d);
+    if (duration !== 'custom') {
+      const start = dayjs(d);
+      let end;
+      switch(duration) {
+        case '1w': end = start.add(1, 'week'); break;
+        case '2w': end = start.add(2, 'week'); break;
+        case '1m': end = start.add(1, 'month'); break;
+        case '2m': end = start.add(2, 'month'); break;
+        case '3m': end = start.add(3, 'month'); break;
+        default: return;
+      }
+      setEndDate(end.format('YYYY-MM-DD'));
+    }
+  };
+  
   const handleSave = () => { if (!projectId || !reqName.trim()) return; addAllocation({ personId, projectId, requirementName: reqName.trim(), startDate, endDate, effortPercent: effort }); onClose(); };
   return (<>
     <h2 className="text-base font-semibold mb-4">新建排期</h2>
@@ -182,7 +244,16 @@ function NewAlloc({personId,date,onClose}:{personId:string;date:string;onClose:(
     <select value={projectId} onChange={e=>setProjectId(e.target.value)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm mb-3"><option value="">选择项目</option>{projects.map((p:any)=><option key={p.id} value={p.id}>{p.name}</option>)}</select>
     <label className="block text-sm text-gray-600 mb-1">需求名称</label>
     <input value={reqName} onChange={e=>setReqName(e.target.value)} placeholder="需求名称" className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm mb-3"/>
-    <div className="flex gap-2 mb-3"><div className="flex-1"><label className="block text-sm text-gray-600 mb-1">开始</label><input type="text" value={startDate} onChange={e=>setStartDate(e.target.value)} placeholder="YYYY-MM-DD" className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"/></div><div className="flex-1"><label className="block text-sm text-gray-600 mb-1">结束</label><input type="text" value={endDate} onChange={e=>setEndDate(e.target.value)} placeholder="YYYY-MM-DD" className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"/></div></div>
+    <label className="block text-sm text-gray-600 mb-1">时长</label>
+    <select value={duration} onChange={e=>handleDurationChange(e.target.value)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm mb-3">
+      <option value="custom">自定义</option>
+      <option value="1w">1周</option>
+      <option value="2w">2周</option>
+      <option value="1m">1个月</option>
+      <option value="2m">2个月</option>
+      <option value="3m">3个月</option>
+    </select>
+    <div className="flex gap-2 mb-3"><div className="flex-1"><label className="block text-sm text-gray-600 mb-1">开始</label><input type="text" value={startDate} onChange={e=>handleStartDateChange(e.target.value)} placeholder="YYYY-MM-DD" className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"/></div><div className="flex-1"><label className="block text-sm text-gray-600 mb-1">结束</label><input type="text" value={endDate} onChange={e=>setEndDate(e.target.value)} placeholder="YYYY-MM-DD" disabled={duration!=='custom'} className={`w-full border border-gray-300 rounded px-2 py-1.5 text-sm ${duration!=='custom'?'bg-gray-100':''}`}/></div></div>
     <label className="block text-sm text-gray-600 mb-1">投入比例: <span className="font-semibold text-indigo-600">{effort}%</span></label>
     <input type="range" min={10} max={200} step={10} value={effort} onChange={e=>setEffort(Number(e.target.value))} className="w-full mb-4"/>
     <div className="flex gap-2 justify-end"><button onClick={onClose} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded">取消</button><button onClick={handleSave} className="px-4 py-1.5 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-500">保存</button></div>
@@ -200,6 +271,41 @@ function EditAlloc({id,onClose,onDelete}:{id:string;onClose:()=>void;onDelete:()
   const [endDate, setEndDate] = useState(alloc.endDate);
   const [effort, setEffort] = useState(alloc.effortPercent);
   const [editing, setEditing] = useState(false);
+  const [duration, setDuration] = useState('custom');
+  
+  const handleDurationChange = (d: string) => {
+    setDuration(d);
+    if (d === 'custom') return;
+    const start = dayjs(startDate);
+    let end;
+    switch(d) {
+      case '1w': end = start.add(1, 'week'); break;
+      case '2w': end = start.add(2, 'week'); break;
+      case '1m': end = start.add(1, 'month'); break;
+      case '2m': end = start.add(2, 'month'); break;
+      case '3m': end = start.add(3, 'month'); break;
+      default: return;
+    }
+    setEndDate(end.format('YYYY-MM-DD'));
+  };
+  
+  const handleStartDateChange = (d: string) => {
+    setStartDate(d);
+    if (duration !== 'custom') {
+      const start = dayjs(d);
+      let end;
+      switch(duration) {
+        case '1w': end = start.add(1, 'week'); break;
+        case '2w': end = start.add(2, 'week'); break;
+        case '1m': end = start.add(1, 'month'); break;
+        case '2m': end = start.add(2, 'month'); break;
+        case '3m': end = start.add(3, 'month'); break;
+        default: return;
+      }
+      setEndDate(end.format('YYYY-MM-DD'));
+    }
+  };
+  
   if (!editing) return (<>
     <h2 className="text-base font-semibold mb-4">排期详情</h2>
     <p className="text-sm text-gray-600 mb-1">项目: {proj?.name}</p>
@@ -213,7 +319,16 @@ function EditAlloc({id,onClose,onDelete}:{id:string;onClose:()=>void;onDelete:()
     <p className="text-sm text-gray-600 mb-3">项目: {proj?.name}</p>
     <label className="block text-sm text-gray-600 mb-1">需求名称</label>
     <input value={reqName} onChange={e=>setReqName(e.target.value)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm mb-3"/>
-    <div className="flex gap-2 mb-3"><div className="flex-1"><label className="block text-sm text-gray-600 mb-1">开始</label><input type="text" value={startDate} onChange={e=>setStartDate(e.target.value)} placeholder="YYYY-MM-DD" className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"/></div><div className="flex-1"><label className="block text-sm text-gray-600 mb-1">结束</label><input type="text" value={endDate} onChange={e=>setEndDate(e.target.value)} placeholder="YYYY-MM-DD" className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"/></div></div>
+    <label className="block text-sm text-gray-600 mb-1">时长</label>
+    <select value={duration} onChange={e=>handleDurationChange(e.target.value)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm mb-3">
+      <option value="custom">自定义</option>
+      <option value="1w">1周</option>
+      <option value="2w">2周</option>
+      <option value="1m">1个月</option>
+      <option value="2m">2个月</option>
+      <option value="3m">3个月</option>
+    </select>
+    <div className="flex gap-2 mb-3"><div className="flex-1"><label className="block text-sm text-gray-600 mb-1">开始</label><input type="text" value={startDate} onChange={e=>handleStartDateChange(e.target.value)} placeholder="YYYY-MM-DD" className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"/></div><div className="flex-1"><label className="block text-sm text-gray-600 mb-1">结束</label><input type="text" value={endDate} onChange={e=>setEndDate(e.target.value)} placeholder="YYYY-MM-DD" disabled={duration!=='custom'} className={`w-full border border-gray-300 rounded px-2 py-1.5 text-sm ${duration!=='custom'?'bg-gray-100':''}`}/></div></div>
     <label className="block text-sm text-gray-600 mb-1">投入比例: <span className="font-semibold text-indigo-600">{effort}%</span></label>
     <input type="range" min={10} max={200} step={10} value={effort} onChange={e=>setEffort(Number(e.target.value))} className="w-full mb-4"/>
     <div className="flex gap-2 justify-end"><button onClick={()=>setEditing(false)} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded">取消</button><button onClick={()=>{updateAllocation(id,{requirementName:reqName,startDate,endDate,effortPercent:effort});setEditing(false);}} className="px-4 py-1.5 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-500">保存</button></div>
