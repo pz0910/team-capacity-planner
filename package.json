@@ -1,20 +1,74 @@
 {
   "name": "team-capacity-planner",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
+  "description": "团队人力排期管理工具 - 可视化管理组内人员的项目分配和工作负载",
+  "author": "pz0910",
+  "license": "MIT",
+  "main": "electron-main.js",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "electron:dev": "vite build && electron .",
+    "electron:build": "vite build && electron-builder",
+    "electron:build:win": "vite build && electron-builder --win",
+    "electron:build:mac": "vite build && electron-builder --mac",
+    "electron:build:all": "vite build && electron-builder --win --mac",
+    "electron:package:win": "vite build && electron-packager . \"人力排期管理\" --platform=win32 --arch=x64 --out=release --overwrite --icon=public/favicon.ico",
+    "electron:package:mac": "vite build && electron-packager . \"人力排期管理\" --platform=darwin --arch=x64,arm64 --out=release --overwrite --icon=public/favicon.icns"
+  },
+  "build": {
+    "appId": "com.team-capacity-planner",
+    "productName": "人力排期管理",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron-main.js",
+      "public/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "public/favicon.svg"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "public/favicon.svg"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "人力排期管理"
+    }
   },
   "dependencies": {
-    "@dnd-kit/core": "^6.3.1",
-    "@dnd-kit/sortable": "^10.0.0",
-    "@dnd-kit/utilities": "^3.2.2",
     "dayjs": "^1.11.21",
-    "dexie": "^4.4.3",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "zustand": "^5.0.14"
@@ -25,6 +79,9 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",
+    "electron": "^42.3.0",
+    "electron-builder": "^26.8.1",
+    "electron-packager": "^17.1.2",
     "eslint": "^10.3.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",

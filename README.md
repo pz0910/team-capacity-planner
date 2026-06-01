@@ -23,12 +23,20 @@
 
 ## 快速开始
 
-**Windows（双击运行）：**
+**方式一：桌面应用（推荐）**
+
+下载对应系统的安装包：
+- Windows: `人力排期管理 Setup.exe` 或 `人力排期管理.exe`（便携版）
+- macOS: `人力排期管理.dmg`
+
+**方式二：开发模式**
+
+Windows（双击运行）：
 ```
 start.bat
 ```
 
-**命令行：**
+命令行：
 ```bash
 # 安装依赖
 npm install
@@ -42,6 +50,18 @@ npx vite --host
 
 # 访问 http://localhost:5173
 ```
+
+**方式三：GitHub Actions 自动构建**
+
+项目已配置 GitHub Actions，推送 tag 时自动构建：
+
+```bash
+# 创建新版本
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+GitHub 会自动构建 Windows 和 macOS 版本，构建完成后在 Actions 页面下载。
 
 ## 使用说明
 

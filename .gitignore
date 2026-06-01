@@ -28,6 +28,10 @@ dist-ssr
 .env.local
 .env.*.local
 
+# Build artifacts
+release/
+dist/
+
 # Personal files
 PROJECT_CONTEXT.md
 TEST_REPORT.md
