@@ -154,9 +154,12 @@ function TimelineView() {
     <div className="h-full flex flex-col">
       <div className="flex shrink-0 border-b border-gray-200 bg-white sticky top-0 z-10">
         <div className="w-32 shrink-0 border-r border-gray-200 px-3 py-2 text-sm font-medium text-gray-600">人员</div>
-        <div className="flex overflow-x-auto">{periods.map(p => <div key={p} className={`text-center px-1 py-2 text-xs ${p===today?'bg-indigo-50 font-semibold text-indigo-600':''}`} style={{minWidth:CELL_W}}>{dayjs(p).format('M/D')}</div>)}</div>
+        <div className="flex overflow-x-hidden" id="timeline-header">{periods.map(p => <div key={p} className={`text-center px-1 py-2 text-xs ${p===today?'bg-indigo-50 font-semibold text-indigo-600':''}`} style={{minWidth:CELL_W}}>{dayjs(p).format('M/D')}</div>)}</div>
       </div>
-      <div className="flex-1 overflow-auto">
+      <div className="flex-1 overflow-auto" id="timeline-content" onScroll={(e) => {
+        const header = document.getElementById('timeline-header');
+        if (header) header.scrollLeft = e.currentTarget.scrollLeft;
+      }}>
         {persons.length===0 && <div className="flex items-center justify-center h-40 text-gray-400 text-sm">← 在左侧添加人员和项目，然后点击时间轴分配排期</div>}
         {persons.map((person: any) => {
           const pa = allocations.filter((a: any) => a.personId === person.id);
@@ -176,7 +179,7 @@ function TimelineView() {
                   if (si < 0) return null;
                   const ei = periods.indexOf(dayjs(alloc.endDate).startOf('isoWeek').format('YYYY-MM-DD'));
                   if (ei < 0) return null;
-                  return <div key={alloc.id} draggable onDragStart={(e)=>handleDragStart(alloc.id,e)} className="absolute h-6 rounded cursor-grab active:cursor-grabbing flex items-center px-1.5 text-white text-xs truncate hover:shadow-lg hover:z-10" style={{left:si*CELL_W,width:(ei-si+1)*CELL_W,top:li*ROW_H+6,background:proj.color}} title={proj.name+' - '+alloc.requirementName+' ('+alloc.effortPercent+'%)'} onClick={e=>{e.stopPropagation();setEditId(alloc.id);}}>{proj.name} {alloc.effortPercent}%</div>;
+                  return <div key={alloc.id} draggable onDragStart={(e)=>handleDragStart(alloc.id,e)} className="absolute h-6 rounded cursor-grab active:cursor-grabbing flex items-center px-1.5 text-white text-xs truncate hover:shadow-lg hover:z-10" style={{left:si*CELL_W,width:(ei-si+1)*CELL_W,top:li*ROW_H+6,background:proj.color}} title={proj.name+' - '+alloc.requirementName+' ('+alloc.effortPercent+'%)'} onClick={e=>{e.stopPropagation();setEditId(alloc.id);}}>{proj.name} {alloc.requirementName} {alloc.effortPercent}%</div>;
                 }))}
               </div>
             </div>
@@ -210,11 +213,11 @@ function NewAlloc({personId,date,onClose}:{personId:string;date:string;onClose:(
     const start = dayjs(startDate);
     let end;
     switch(d) {
-      case '1w': end = start.add(1, 'week'); break;
-      case '2w': end = start.add(2, 'week'); break;
-      case '1m': end = start.add(1, 'month'); break;
-      case '2m': end = start.add(2, 'month'); break;
-      case '3m': end = start.add(3, 'month'); break;
+      case '1w': end = start.add(6, 'day'); break;  // 1周=7天(含开始日)
+      case '2w': end = start.add(13, 'day'); break;  // 2周=14天(含开始日)
+      case '1m': end = start.add(1, 'month').subtract(1, 'day'); break;  // 1个月(含开始日)
+      case '2m': end = start.add(2, 'month').subtract(1, 'day'); break;
+      case '3m': end = start.add(3, 'month').subtract(1, 'day'); break;
       default: return;
     }
     setEndDate(end.format('YYYY-MM-DD'));
@@ -226,11 +229,11 @@ function NewAlloc({personId,date,onClose}:{personId:string;date:string;onClose:(
       const start = dayjs(d);
       let end;
       switch(duration) {
-        case '1w': end = start.add(1, 'week'); break;
-        case '2w': end = start.add(2, 'week'); break;
-        case '1m': end = start.add(1, 'month'); break;
-        case '2m': end = start.add(2, 'month'); break;
-        case '3m': end = start.add(3, 'month'); break;
+        case '1w': end = start.add(6, 'day'); break;
+        case '2w': end = start.add(13, 'day'); break;
+        case '1m': end = start.add(1, 'month').subtract(1, 'day'); break;
+        case '2m': end = start.add(2, 'month').subtract(1, 'day'); break;
+        case '3m': end = start.add(3, 'month').subtract(1, 'day'); break;
         default: return;
       }
       setEndDate(end.format('YYYY-MM-DD'));
@@ -279,11 +282,11 @@ function EditAlloc({id,onClose,onDelete}:{id:string;onClose:()=>void;onDelete:()
     const start = dayjs(startDate);
     let end;
     switch(d) {
-      case '1w': end = start.add(1, 'week'); break;
-      case '2w': end = start.add(2, 'week'); break;
-      case '1m': end = start.add(1, 'month'); break;
-      case '2m': end = start.add(2, 'month'); break;
-      case '3m': end = start.add(3, 'month'); break;
+      case '1w': end = start.add(6, 'day'); break;  // 1周=7天(含开始日)
+      case '2w': end = start.add(13, 'day'); break;  // 2周=14天(含开始日)
+      case '1m': end = start.add(1, 'month').subtract(1, 'day'); break;  // 1个月(含开始日)
+      case '2m': end = start.add(2, 'month').subtract(1, 'day'); break;
+      case '3m': end = start.add(3, 'month').subtract(1, 'day'); break;
       default: return;
     }
     setEndDate(end.format('YYYY-MM-DD'));
@@ -295,11 +298,11 @@ function EditAlloc({id,onClose,onDelete}:{id:string;onClose:()=>void;onDelete:()
       const start = dayjs(d);
       let end;
       switch(duration) {
-        case '1w': end = start.add(1, 'week'); break;
-        case '2w': end = start.add(2, 'week'); break;
-        case '1m': end = start.add(1, 'month'); break;
-        case '2m': end = start.add(2, 'month'); break;
-        case '3m': end = start.add(3, 'month'); break;
+        case '1w': end = start.add(6, 'day'); break;
+        case '2w': end = start.add(13, 'day'); break;
+        case '1m': end = start.add(1, 'month').subtract(1, 'day'); break;
+        case '2m': end = start.add(2, 'month').subtract(1, 'day'); break;
+        case '3m': end = start.add(3, 'month').subtract(1, 'day'); break;
         default: return;
       }
       setEndDate(end.format('YYYY-MM-DD'));

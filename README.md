@@ -23,11 +23,21 @@
 
 ## 快速开始
 
+**Windows（双击运行）：**
+```
+start.bat
+```
+
+**命令行：**
 ```bash
 # 安装依赖
 npm install
 
-# 启动开发服务器
+# 一键启动（自动清缓存）
+./start.sh    # Linux/Mac
+start.bat     # Windows
+
+# 或手动启动
 npx vite --host
 
 # 访问 http://localhost:5173
