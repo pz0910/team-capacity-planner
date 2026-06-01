@@ -12,11 +12,13 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            platform: win
-            artifact: release/*.exe
+            platform: win32
+            arch: x64
+            ext: .exe
           - os: macos-latest
-            platform: mac
-            artifact: release/*.dmg
+            platform: darwin
+            arch: x64
+            ext: .zip
 
     runs-on: ${{ matrix.os }}
 
@@ -36,11 +38,20 @@ jobs:
       - name: Build Vite app
         run: npm run build
 
-      - name: Build Electron app
-        run: npm run electron:build:${{ matrix.platform }}
+      - name: Install electron-packager
+        run: npm install --save-dev electron-packager
+
+      - name: Package Electron app
+        run: npx electron-packager . "TeamCapacityPlanner" --platform=${{ matrix.platform }} --arch=${{ matrix.arch }} --out=release --overwrite
+
+      - name: Create archive (macOS)
+        if: matrix.platform == 'darwin'
+        run: cd release && zip -r TeamCapacityPlanner-v${{ github.ref_name }}-${{ matrix.platform }}-${{ matrix.arch }}.zip TeamCapacityPlanner-${{ matrix.platform }}-${{ matrix.arch }}/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-${{ matrix.platform }}
-          path: release/
+          name: release-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            release/*.exe
+            release/*.zip
