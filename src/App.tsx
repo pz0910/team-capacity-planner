@@ -116,6 +116,7 @@ function TimelineView() {
   const [showModal, setShowModal] = useState<any>(null);
   const [editId, setEditId] = useState<string|null>(null);
   const dragRef = useRef<{allocId:string;startX:number}|null>(null);
+  const personSidebarRef = useRef<HTMLDivElement>(null);
 
   const startDate = useMemo(() => dayjs().subtract(4, 'week').toDate(), []);
   const periods = useMemo(() => generateWeeks(startDate, 26), [startDate]);
@@ -150,27 +151,50 @@ function TimelineView() {
     e.dataTransfer.dropEffect = 'move';
   }, []);
 
+  const handlePersonTimelineScroll = useCallback(() => {
+    const el = document.getElementById('person-timeline-scroll');
+    if (el && personSidebarRef.current) personSidebarRef.current.scrollTop = el.scrollTop;
+  }, []);
+
   return (
-    <div className="h-full flex flex-col">
-      <div className="flex shrink-0 border-b border-gray-200 bg-white sticky top-0 z-10">
-        <div className="w-32 shrink-0 border-r border-gray-200 px-3 py-2 text-sm font-medium text-gray-600">人员</div>
-        <div className="flex overflow-x-hidden" id="timeline-header">{periods.map(p => <div key={p} className={`text-center px-1 py-2 text-xs ${p===today?'bg-indigo-50 font-semibold text-indigo-600':''}`} style={{minWidth:CELL_W}}>{dayjs(p).format('M/D')}</div>)}</div>
+    <div className="h-full flex">
+      {/* Left fixed sidebar */}
+      <div className="w-32 shrink-0 flex flex-col border-r border-gray-200 bg-white z-20">
+        <div className="px-3 py-2 text-sm font-medium text-gray-600 border-b border-gray-200" style={{height:41}}>人员</div>
+        <div className="flex-1 overflow-hidden" ref={personSidebarRef}>
+          {persons.length===0 && <div className="flex items-center justify-center h-40 text-gray-400 text-xs px-2 text-center">← 在左侧添加人员和项目，然后点击时间轴分配排期</div>}
+          {persons.map((person: any) => {
+            const pa = allocations.filter((a: any) => a.personId === person.id);
+            const sorted = [...pa].sort((a: any, b: any) => a.startDate.localeCompare(b.startDate));
+            const lanes: any[][] = [];
+            for (const alloc of sorted) { let placed = false; for (const lane of lanes) { if (alloc.startDate > lane[lane.length-1].endDate) { lane.push(alloc); placed = true; break; } } if (!placed) lanes.push([alloc]); }
+            const rowH = Math.max(lanes.length, 1) * ROW_H;
+            return (
+              <div key={person.id} className="border-b border-gray-200 px-3 flex items-center gap-2" style={{height:rowH}}>
+                <span className="w-2 h-2 rounded-full" style={{background:person.color}}/>
+                <span className="text-sm truncate">{person.name}</span>
+              </div>
+            );
+          })}
+        </div>
       </div>
-      <div className="flex-1 overflow-auto" id="timeline-content" onScroll={(e) => {
-        const header = document.getElementById('timeline-header');
-        if (header) header.scrollLeft = e.currentTarget.scrollLeft;
-      }}>
-        {persons.length===0 && <div className="flex items-center justify-center h-40 text-gray-400 text-sm">← 在左侧添加人员和项目，然后点击时间轴分配排期</div>}
-        {persons.map((person: any) => {
-          const pa = allocations.filter((a: any) => a.personId === person.id);
-          const sorted = [...pa].sort((a: any, b: any) => a.startDate.localeCompare(b.startDate));
-          const lanes: any[][] = [];
-          for (const alloc of sorted) { let placed = false; for (const lane of lanes) { if (alloc.startDate > lane[lane.length-1].endDate) { lane.push(alloc); placed = true; break; } } if (!placed) lanes.push([alloc]); }
-          const rowH = Math.max(lanes.length, 1) * ROW_H;
-          return (
-            <div key={person.id} className="flex border-b border-gray-200">
-              <div className="w-32 shrink-0 border-r border-gray-200 px-3 flex items-center gap-2" style={{height:rowH}}><span className="w-2 h-2 rounded-full" style={{background:person.color}}/><span className="text-sm truncate">{person.name}</span></div>
-              <div className="flex overflow-x-auto relative" style={{height:rowH}}>
+
+      {/* Right scrollable timeline */}
+      <div className="flex-1 overflow-auto" id="person-timeline-scroll" onScroll={handlePersonTimelineScroll}>
+        <div style={{minWidth:periods.length*CELL_W}}>
+          {/* Sticky date header */}
+          <div className="flex bg-white sticky top-0 z-10 border-b border-gray-200">
+            {periods.map(p => <div key={p} className={`text-center px-1 py-2 text-xs ${p===today?'bg-indigo-50 font-semibold text-indigo-600':''}`} style={{minWidth:CELL_W}}>{dayjs(p).format('M/D')}</div>)}
+          </div>
+          {/* Timeline body rows */}
+          {persons.map((person: any) => {
+            const pa = allocations.filter((a: any) => a.personId === person.id);
+            const sorted = [...pa].sort((a: any, b: any) => a.startDate.localeCompare(b.startDate));
+            const lanes: any[][] = [];
+            for (const alloc of sorted) { let placed = false; for (const lane of lanes) { if (alloc.startDate > lane[lane.length-1].endDate) { lane.push(alloc); placed = true; break; } } if (!placed) lanes.push([alloc]); }
+            const rowH = Math.max(lanes.length, 1) * ROW_H;
+            return (
+              <div key={person.id} className="flex relative border-b border-gray-200" style={{height:rowH,minWidth:periods.length*CELL_W}}>
                 {periods.map(week => { const load = getLoad(person.id, week); const bg = load>100?'#FEE2E2':load>80?'#FEF3C7':load>0?'#ECFDF5':''; return <div key={week} className={week===today?'bg-indigo-50':''} style={{background:bg||undefined,minWidth:CELL_W,height:rowH}} onClick={()=>setShowModal({personId:person.id,date:week})} onDragOver={handleDragOver} onDrop={(e)=>handleDrop(week,e)}/>; })}
                 {lanes.map((lane, li) => lane.map((alloc: any) => {
                   const proj = projects.find((p: any) => p.id === alloc.projectId);
@@ -182,10 +206,11 @@ function TimelineView() {
                   return <div key={alloc.id} draggable onDragStart={(e)=>handleDragStart(alloc.id,e)} className="absolute h-6 rounded cursor-grab active:cursor-grabbing flex items-center px-1.5 text-white text-xs truncate hover:shadow-lg hover:z-10" style={{left:si*CELL_W,width:(ei-si+1)*CELL_W,top:li*ROW_H+6,background:proj.color}} title={proj.name+' - '+alloc.requirementName+' ('+alloc.effortPercent+'%)'} onClick={e=>{e.stopPropagation();setEditId(alloc.id);}}>{proj.name} {alloc.requirementName} {alloc.effortPercent}%</div>;
                 }))}
               </div>
-            </div>
-          );
-        })}
+            );
+          })}
+        </div>
       </div>
+
       {(showModal||editId) && (
         <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50" onClick={()=>{setShowModal(null);setEditId(null);}}>
           <div className="bg-white rounded-lg shadow-xl p-5 w-96" onClick={e=>e.stopPropagation()}>
@@ -342,29 +367,84 @@ function ProjectTimelineView() {
   const projects = useStore((s:any) => s.projects);
   const persons = useStore((s:any) => s.persons);
   const allocations = useStore((s:any) => s.allocations);
+  const projSidebarRef = useRef<HTMLDivElement>(null);
   const startDate = useMemo(() => dayjs().subtract(4, 'week').toDate(), []);
   const periods = useMemo(() => generateWeeks(startDate, 26), [startDate]);
   const today = dayjs().format('YYYY-MM-DD');
   const reqMap = useMemo(() => { const m = new Map<string, any[]>(); for (const a of allocations) { const k = a.projectId+'__'+a.requirementName; if (!m.has(k)) m.set(k, []); m.get(k)!.push(a); } return m; }, [allocations]);
+
+  const handleProjTimelineScroll = useCallback(() => {
+    const el = document.getElementById('proj-timeline-scroll');
+    if (el && projSidebarRef.current) projSidebarRef.current.scrollTop = el.scrollTop;
+  }, []);
+
   return (
-    <div className="h-full flex flex-col">
-      <div className="flex shrink-0 border-b border-gray-200 bg-white sticky top-0 z-10">
-        <div className="w-48 shrink-0 border-r border-gray-200 px-3 py-2 text-sm font-medium text-gray-600">项目 / 需求</div>
-        <div className="flex overflow-x-auto">{periods.map(p=><div key={p} className={`text-center px-1 py-2 text-xs ${p===today?'bg-indigo-50 font-semibold text-indigo-600':''}`} style={{minWidth:CELL_W}}>{dayjs(p).format('M/D')}</div>)}</div>
+    <div className="h-full flex">
+      {/* Left fixed sidebar */}
+      <div className="w-48 shrink-0 flex flex-col border-r border-gray-200 bg-white z-20">
+        <div className="px-3 py-2 text-sm font-medium text-gray-600 border-b border-gray-200" style={{height:41}}>项目 / 需求</div>
+        <div className="flex-1 overflow-hidden" ref={projSidebarRef}>
+          {projects.length===0 && <div className="flex items-center justify-center h-40 text-gray-400 text-sm">暂无项目</div>}
+          {projects.map((proj:any) => {
+            const entries = [...reqMap.entries()].filter(([k])=>k.startsWith(proj.id+'__'));
+            if (entries.length===0) return (
+              <div key={proj.id} className="border-b border-gray-200 px-3 py-2 flex items-center gap-2 bg-gray-50" style={{height:ROW_H}}>
+                <span className="w-3 h-3 rounded-sm" style={{background:proj.color}}/>
+                <span className="text-sm font-medium">{proj.name}</span>
+                <span className="text-xs text-gray-400 ml-auto">无需求</span>
+              </div>
+            );
+            return entries.map(([key,allocs])=>{
+              const reqName = key.split('__')[1];
+              const sorted = [...allocs].sort((a:any,b:any)=>a.startDate.localeCompare(b.startDate));
+              const lanes:any[][]=[]; for(const alloc of sorted){let placed=false;for(const lane of lanes){if(alloc.startDate>lane[lane.length-1].endDate){lane.push(alloc);placed=true;break;}}if(!placed)lanes.push([alloc]);}
+              const rowH = Math.max(lanes.length,1)*ROW_H;
+              return (
+                <div key={key} className="border-b border-gray-200 px-3 flex items-center gap-2" style={{height:rowH}}>
+                  <span className="w-2 h-2 rounded-sm" style={{background:proj.color}}/>
+                  <div className="truncate">
+                    <div className="text-xs text-gray-400">{proj.name}</div>
+                    <div className="text-sm">{reqName}</div>
+                  </div>
+                </div>
+              );
+            });
+          })}
+        </div>
       </div>
-      <div className="flex-1 overflow-auto">
-        {projects.length===0 && <div className="flex items-center justify-center h-40 text-gray-400 text-sm">暂无项目</div>}
-        {projects.map((proj:any) => {
-          const entries = [...reqMap.entries()].filter(([k])=>k.startsWith(proj.id+'__'));
-          if (entries.length===0) return <div key={proj.id} className="flex border-b border-gray-200"><div className="w-48 shrink-0 border-r border-gray-200 px-3 py-2 flex items-center gap-2 bg-gray-50"><span className="w-3 h-3 rounded-sm" style={{background:proj.color}}/><span className="text-sm font-medium">{proj.name}</span><span className="text-xs text-gray-400 ml-auto">无需求</span></div><div style={{height:ROW_H}}/></div>;
-          return entries.map(([key,allocs])=>{
-            const reqName = key.split('__')[1];
-            const sorted = [...allocs].sort((a:any,b:any)=>a.startDate.localeCompare(b.startDate));
-            const lanes:any[][]=[]; for(const alloc of sorted){let placed=false;for(const lane of lanes){if(alloc.startDate>lane[lane.length-1].endDate){lane.push(alloc);placed=true;break;}}if(!placed)lanes.push([alloc]);}
-            const rowH = Math.max(lanes.length,1)*ROW_H;
-            return <div key={key} className="flex border-b border-gray-200"><div className="w-48 shrink-0 border-r border-gray-200 px-3 flex items-center gap-2" style={{height:rowH}}><span className="w-2 h-2 rounded-sm" style={{background:proj.color}}/><div className="truncate"><div className="text-xs text-gray-400">{proj.name}</div><div className="text-sm">{reqName}</div></div></div><div className="flex overflow-x-auto relative" style={{height:rowH}}>{periods.map(week=><div key={week} className={week===today?'bg-indigo-50':''} style={{minWidth:CELL_W,height:rowH}}/>)}{lanes.map((lane,li)=>lane.map((alloc:any)=>{const person=persons.find((p:any)=>p.id===alloc.personId);if(!person)return null;const si=periods.indexOf(dayjs(alloc.startDate).startOf('isoWeek').format('YYYY-MM-DD'));if(si<0)return null;const ei=periods.indexOf(dayjs(alloc.endDate).startOf('isoWeek').format('YYYY-MM-DD'));if(ei<0)return null;return <div key={alloc.id} className="absolute h-6 rounded cursor-pointer flex items-center px-1.5 text-white text-xs truncate hover:shadow-lg" style={{left:si*CELL_W,width:(ei-si+1)*CELL_W,top:li*ROW_H+6,background:proj.color}}>{person.name} {alloc.effortPercent}%</div>}))}</div></div>;
-          });
-        })}
+
+      {/* Right scrollable timeline */}
+      <div className="flex-1 overflow-auto" id="proj-timeline-scroll" onScroll={handleProjTimelineScroll}>
+        <div style={{minWidth:periods.length*CELL_W}}>
+          {/* Sticky date header */}
+          <div className="flex bg-white sticky top-0 z-10 border-b border-gray-200">
+            {periods.map(p=><div key={p} className={`text-center px-1 py-2 text-xs ${p===today?'bg-indigo-50 font-semibold text-indigo-600':''}`} style={{minWidth:CELL_W}}>{dayjs(p).format('M/D')}</div>)}
+          </div>
+          {/* Timeline body rows */}
+          {projects.map((proj:any) => {
+            const entries = [...reqMap.entries()].filter(([k])=>k.startsWith(proj.id+'__'));
+            if (entries.length===0) return <div key={proj.id} className="border-b border-gray-200" style={{height:ROW_H,minWidth:periods.length*CELL_W}}/>;
+            return entries.map(([key,allocs])=>{
+              const sorted = [...allocs].sort((a:any,b:any)=>a.startDate.localeCompare(b.startDate));
+              const lanes:any[][]=[]; for(const alloc of sorted){let placed=false;for(const lane of lanes){if(alloc.startDate>lane[lane.length-1].endDate){lane.push(alloc);placed=true;break;}}if(!placed)lanes.push([alloc]);}
+              const rowH = Math.max(lanes.length,1)*ROW_H;
+              return (
+                <div key={key} className="flex relative border-b border-gray-200" style={{height:rowH,minWidth:periods.length*CELL_W}}>
+                  {periods.map(week=><div key={week} className={week===today?'bg-indigo-50':''} style={{minWidth:CELL_W,height:rowH}}/>)}
+                  {lanes.map((lane,li)=>lane.map((alloc:any)=>{
+                    const person=persons.find((p:any)=>p.id===alloc.personId);
+                    if(!person)return null;
+                    const si=periods.indexOf(dayjs(alloc.startDate).startOf('isoWeek').format('YYYY-MM-DD'));
+                    if(si<0)return null;
+                    const ei=periods.indexOf(dayjs(alloc.endDate).startOf('isoWeek').format('YYYY-MM-DD'));
+                    if(ei<0)return null;
+                    return <div key={alloc.id} className="absolute h-6 rounded cursor-pointer flex items-center px-1.5 text-white text-xs truncate hover:shadow-lg" style={{left:si*CELL_W,width:(ei-si+1)*CELL_W,top:li*ROW_H+6,background:proj.color}}>{person.name} {alloc.effortPercent}%</div>;
+                  }))}
+                </div>
+              );
+            });
+          })}
+        </div>
       </div>
     </div>
   );
