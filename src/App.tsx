@@ -35,12 +35,33 @@ const useStore = create((set, get) => ({
 
 const CELL_W = 80;
 const ROW_H = 36;
+const HEADER_H = 40; // Bug4 fix: unified header height for both sidebar and timeline
+const TIMELINE_START_WEEKS = 26; // 往前周数（半年）
+const TIMELINE_END_WEEKS = 52;   // 往后周数（一年）
 
 function generateWeeks(start: Date, count: number): string[] {
   const weeks: string[] = [];
   let d = dayjs(start).startOf('isoWeek');
   for (let i = 0; i < count; i++) { weeks.push(d.format('YYYY-MM-DD')); d = d.add(1, 'week'); }
   return weeks;
+}
+
+/** Helper: compute lane assignment for a set of allocations (Bug2 fix) */
+function computeLanes(allocs: any[]): { lanes: any[][]; rowH: number } {
+  const sorted = [...allocs].sort((a: any, b: any) => a.startDate.localeCompare(b.startDate));
+  const lanes: any[][] = [];
+  for (const alloc of sorted) {
+    let placed = false;
+    for (const lane of lanes) {
+      if (alloc.startDate > lane[lane.length - 1].endDate) {
+        lane.push(alloc);
+        placed = true;
+        break;
+      }
+    }
+    if (!placed) lanes.push([alloc]);
+  }
+  return { lanes, rowH: Math.max(lanes.length, 1) * ROW_H };
 }
 
 function Header() {
@@ -116,11 +137,20 @@ function TimelineView() {
   const [showModal, setShowModal] = useState<any>(null);
   const [editId, setEditId] = useState<string|null>(null);
   const dragRef = useRef<{allocId:string;startX:number}|null>(null);
-  const personSidebarRef = useRef<HTMLDivElement>(null);
 
-  const startDate = useMemo(() => dayjs().subtract(4, 'week').toDate(), []);
-  const periods = useMemo(() => generateWeeks(startDate, 26), [startDate]);
+  const startDate = useMemo(() => dayjs().subtract(TIMELINE_START_WEEKS, 'week').toDate(), []);
+  const periods = useMemo(() => generateWeeks(startDate, TIMELINE_START_WEEKS + TIMELINE_END_WEEKS), [startDate]);
   const today = dayjs().format('YYYY-MM-DD');
+
+  // Bug2 fix: single useMemo for lanes/rowH — eliminates duplicate computation
+  const personLanes = useMemo(() => {
+    const map = new Map<string, { lanes: any[][]; rowH: number }>();
+    for (const person of persons) {
+      const pa = allocations.filter((a: any) => a.personId === person.id);
+      map.set(person.id, computeLanes(pa));
+    }
+    return map;
+  }, [persons, allocations]);
 
   const getLoad = (pid: string, week: string) => {
     const weekEnd = dayjs(week).endOf('isoWeek').format('YYYY-MM-DD');
@@ -151,51 +181,54 @@ function TimelineView() {
     e.dataTransfer.dropEffect = 'move';
   }, []);
 
-  const handlePersonTimelineScroll = useCallback(() => {
-    const el = document.getElementById('person-timeline-scroll');
-    if (el && personSidebarRef.current) personSidebarRef.current.scrollTop = el.scrollTop;
-  }, []);
-
+  // Bug1 fix: unified scroll container with sticky left column
+  // No more handlePersonTimelineScroll — single container eliminates drift
   return (
-    <div className="h-full flex">
-      {/* Left fixed sidebar */}
-      <div className="w-32 shrink-0 flex flex-col border-r border-gray-200 bg-white z-20">
-        <div className="px-3 py-2 text-sm font-medium text-gray-600 border-b border-gray-200" style={{height:41}}>人员</div>
-        <div className="flex-1 overflow-hidden" ref={personSidebarRef}>
-          {persons.length===0 && <div className="flex items-center justify-center h-40 text-gray-400 text-xs px-2 text-center">← 在左侧添加人员和项目，然后点击时间轴分配排期</div>}
-          {persons.map((person: any) => {
-            const pa = allocations.filter((a: any) => a.personId === person.id);
-            const sorted = [...pa].sort((a: any, b: any) => a.startDate.localeCompare(b.startDate));
-            const lanes: any[][] = [];
-            for (const alloc of sorted) { let placed = false; for (const lane of lanes) { if (alloc.startDate > lane[lane.length-1].endDate) { lane.push(alloc); placed = true; break; } } if (!placed) lanes.push([alloc]); }
-            const rowH = Math.max(lanes.length, 1) * ROW_H;
-            return (
-              <div key={person.id} className="border-b border-gray-200 px-3 flex items-center gap-2" style={{height:rowH}}>
-                <span className="w-2 h-2 rounded-full" style={{background:person.color}}/>
+    <div className="h-full overflow-auto" id="person-timeline-scroll">
+      <div style={{ minWidth: 128 + periods.length * CELL_W }}>
+        {/* Sticky header row */}
+        <div className="flex sticky top-0 z-20 bg-white border-b border-gray-200">
+          {/* Bug4 fix: HEADER_H constant + flex items-center instead of py-2 */}
+          <div className="w-32 shrink-0 sticky left-0 z-30 bg-white px-3 flex items-center text-sm font-medium text-gray-600 border-r border-gray-200" style={{ height: HEADER_H }}>人员</div>
+          {periods.map(p => (
+            <div key={p} className={`flex items-center justify-center px-1 text-xs border-r-0 ${p===today?'bg-indigo-50 font-semibold text-indigo-600':''}`} style={{ minWidth: CELL_W, height: HEADER_H }}>
+              {dayjs(p).format('M/D')}
+            </div>
+          ))}
+        </div>
+        {/* Body rows — unified container, no separate sidebar */}
+        {persons.length===0 && (
+          <div className="flex items-center justify-center h-40 text-gray-400 text-xs px-2 text-center">
+            ← 在左侧添加人员和项目，然后点击时间轴分配排期
+          </div>
+        )}
+        {persons.map((person: any) => {
+          const { lanes, rowH } = personLanes.get(person.id) || { lanes: [], rowH: ROW_H };
+          return (
+            <div key={person.id} className="flex border-b border-gray-200">
+              {/* Sticky left column — person name */}
+              <div className="w-32 shrink-0 sticky left-0 z-10 bg-white border-r border-gray-200 px-3 flex items-center gap-2" style={{ height: rowH }}>
+                <span className="w-2 h-2 rounded-full" style={{ background: person.color }} />
                 <span className="text-sm truncate">{person.name}</span>
               </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Right scrollable timeline */}
-      <div className="flex-1 overflow-auto" id="person-timeline-scroll" onScroll={handlePersonTimelineScroll}>
-        <div style={{minWidth:periods.length*CELL_W}}>
-          {/* Sticky date header */}
-          <div className="flex bg-white sticky top-0 z-10 border-b border-gray-200">
-            {periods.map(p => <div key={p} className={`text-center px-1 py-2 text-xs ${p===today?'bg-indigo-50 font-semibold text-indigo-600':''}`} style={{minWidth:CELL_W}}>{dayjs(p).format('M/D')}</div>)}
-          </div>
-          {/* Timeline body rows */}
-          {persons.map((person: any) => {
-            const pa = allocations.filter((a: any) => a.personId === person.id);
-            const sorted = [...pa].sort((a: any, b: any) => a.startDate.localeCompare(b.startDate));
-            const lanes: any[][] = [];
-            for (const alloc of sorted) { let placed = false; for (const lane of lanes) { if (alloc.startDate > lane[lane.length-1].endDate) { lane.push(alloc); placed = true; break; } } if (!placed) lanes.push([alloc]); }
-            const rowH = Math.max(lanes.length, 1) * ROW_H;
-            return (
-              <div key={person.id} className="flex relative border-b border-gray-200" style={{height:rowH,minWidth:periods.length*CELL_W}}>
-                {periods.map(week => { const load = getLoad(person.id, week); const bg = load>100?'#FEE2E2':load>80?'#FEF3C7':load>0?'#ECFDF5':''; return <div key={week} className={week===today?'bg-indigo-50':''} style={{background:bg||undefined,minWidth:CELL_W,height:rowH}} onClick={()=>setShowModal({personId:person.id,date:week})} onDragOver={handleDragOver} onDrop={(e)=>handleDrop(week,e)}/>; })}
+              {/* Timeline cells + allocations */}
+              <div className="flex-1 relative" style={{ height: rowH, minWidth: periods.length * CELL_W }}>
+                {/* Background cells */}
+                {periods.map(week => {
+                  const load = getLoad(person.id, week);
+                  const bg = load>100?'#FEE2E2':load>80?'#FEF3C7':load>0?'#ECFDF5':'';
+                  return (
+                    <div
+                      key={week}
+                      className={week===today?'bg-indigo-50':''}
+                      style={{ background: bg||undefined, position: 'absolute', left: periods.indexOf(week) * CELL_W, width: CELL_W, height: rowH }}
+                      onClick={() => setShowModal({ personId: person.id, date: week })}
+                      onDragOver={handleDragOver}
+                      onDrop={(e) => handleDrop(week, e)}
+                    />
+                  );
+                })}
+                {/* Allocation bars */}
                 {lanes.map((lane, li) => lane.map((alloc: any) => {
                   const proj = projects.find((p: any) => p.id === alloc.projectId);
                   if (!proj) return null;
@@ -203,12 +236,30 @@ function TimelineView() {
                   if (si < 0) return null;
                   const ei = periods.indexOf(dayjs(alloc.endDate).startOf('isoWeek').format('YYYY-MM-DD'));
                   if (ei < 0) return null;
-                  return <div key={alloc.id} draggable onDragStart={(e)=>handleDragStart(alloc.id,e)} className="absolute h-6 rounded cursor-grab active:cursor-grabbing flex items-center px-1.5 text-white text-xs truncate hover:shadow-lg hover:z-10" style={{left:si*CELL_W,width:(ei-si+1)*CELL_W,top:li*ROW_H+6,background:proj.color}} title={proj.name+' - '+alloc.requirementName+' ('+alloc.effortPercent+'%)'} onClick={e=>{e.stopPropagation();setEditId(alloc.id);}}>{proj.name} {alloc.requirementName} {alloc.effortPercent}%</div>;
+                  // Bug3 fix: dynamic centering instead of hardcoded +6
+                  return (
+                    <div
+                      key={alloc.id}
+                      draggable
+                      onDragStart={(e) => handleDragStart(alloc.id, e)}
+                      className="absolute h-6 rounded cursor-grab active:cursor-grabbing flex items-center px-1.5 text-white text-xs truncate hover:shadow-lg hover:z-10"
+                      style={{
+                        left: si * CELL_W,
+                        width: (ei - si + 1) * CELL_W,
+                        top: li * ROW_H + (ROW_H - 24) / 2,
+                        background: proj.color
+                      }}
+                      title={proj.name + ' - ' + alloc.requirementName + ' (' + alloc.effortPercent + '%)'}
+                      onClick={e => { e.stopPropagation(); setEditId(alloc.id); }}
+                    >
+                      {proj.name} {alloc.requirementName} {alloc.effortPercent}%
+                    </div>
+                  );
                 }))}
               </div>
-            );
-          })}
-        </div>
+            </div>
+          );
+        })}
       </div>
 
       {(showModal||editId) && (
@@ -231,38 +282,60 @@ function NewAlloc({personId,date,onClose}:{personId:string;date:string;onClose:(
   const [endDate, setEndDate] = useState(date);
   const [effort, setEffort] = useState(100);
   const [duration, setDuration] = useState('custom');
+  const [customWeeks, setCustomWeeks] = useState('');
+  const [customMonths, setCustomMonths] = useState('');
   
-  const handleDurationChange = (d: string) => {
-    setDuration(d);
-    if (d === 'custom') return;
-    const start = dayjs(startDate);
+  const calcEndDate = (s: string, dur: string, w: string, m: string) => {
+    const start = dayjs(s);
     let end;
-    switch(d) {
-      case '1w': end = start.add(6, 'day'); break;  // 1周=7天(含开始日)
-      case '2w': end = start.add(13, 'day'); break;  // 2周=14天(含开始日)
-      case '1m': end = start.add(1, 'month').subtract(1, 'day'); break;  // 1个月(含开始日)
-      case '2m': end = start.add(2, 'month').subtract(1, 'day'); break;
-      case '3m': end = start.add(3, 'month').subtract(1, 'day'); break;
-      default: return;
-    }
-    setEndDate(end.format('YYYY-MM-DD'));
-  };
-  
-  const handleStartDateChange = (d: string) => {
-    setStartDate(d);
-    if (duration !== 'custom') {
-      const start = dayjs(d);
-      let end;
-      switch(duration) {
+    if (dur !== 'custom') {
+      switch(dur) {
         case '1w': end = start.add(6, 'day'); break;
         case '2w': end = start.add(13, 'day'); break;
         case '1m': end = start.add(1, 'month').subtract(1, 'day'); break;
         case '2m': end = start.add(2, 'month').subtract(1, 'day'); break;
         case '3m': end = start.add(3, 'month').subtract(1, 'day'); break;
-        default: return;
+        default: return null;
       }
-      setEndDate(end.format('YYYY-MM-DD'));
+    } else if (w && Number(w) > 0) {
+      end = start.add(Number(w) * 7 - 1, 'day');
+    } else if (m && Number(m) > 0) {
+      end = start.add(Number(m), 'month').subtract(1, 'day');
+    } else {
+      return null;
     }
+    return end.format('YYYY-MM-DD');
+  };
+  
+  const handleDurationChange = (d: string) => {
+    setDuration(d);
+    setCustomWeeks('');
+    setCustomMonths('');
+    if (d === 'custom') return;
+    const end = calcEndDate(startDate, d, '', '');
+    if (end) setEndDate(end);
+  };
+  
+  const handleCustomWeeks = (v: string) => {
+    setCustomWeeks(v);
+    setCustomMonths('');
+    setDuration('custom');
+    const end = calcEndDate(startDate, 'custom', v, '');
+    if (end) setEndDate(end);
+  };
+  
+  const handleCustomMonths = (v: string) => {
+    setCustomMonths(v);
+    setCustomWeeks('');
+    setDuration('custom');
+    const end = calcEndDate(startDate, 'custom', '', v);
+    if (end) setEndDate(end);
+  };
+  
+  const handleStartDateChange = (d: string) => {
+    setStartDate(d);
+    const end = calcEndDate(d, duration, customWeeks, customMonths);
+    if (end) setEndDate(end);
   };
   
   const handleSave = () => { if (!projectId || !reqName.trim()) return; addAllocation({ personId, projectId, requirementName: reqName.trim(), startDate, endDate, effortPercent: effort }); onClose(); };
@@ -273,7 +346,7 @@ function NewAlloc({personId,date,onClose}:{personId:string;date:string;onClose:(
     <label className="block text-sm text-gray-600 mb-1">需求名称</label>
     <input value={reqName} onChange={e=>setReqName(e.target.value)} placeholder="需求名称" className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm mb-3"/>
     <label className="block text-sm text-gray-600 mb-1">时长</label>
-    <select value={duration} onChange={e=>handleDurationChange(e.target.value)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm mb-3">
+    <select value={duration} onChange={e=>handleDurationChange(e.target.value)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm mb-2">
       <option value="custom">自定义</option>
       <option value="1w">1周</option>
       <option value="2w">2周</option>
@@ -281,7 +354,20 @@ function NewAlloc({personId,date,onClose}:{personId:string;date:string;onClose:(
       <option value="2m">2个月</option>
       <option value="3m">3个月</option>
     </select>
-    <div className="flex gap-2 mb-3"><div className="flex-1"><label className="block text-sm text-gray-600 mb-1">开始</label><input type="text" value={startDate} onChange={e=>handleStartDateChange(e.target.value)} placeholder="YYYY-MM-DD" className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"/></div><div className="flex-1"><label className="block text-sm text-gray-600 mb-1">结束</label><input type="text" value={endDate} onChange={e=>setEndDate(e.target.value)} placeholder="YYYY-MM-DD" disabled={duration!=='custom'} className={`w-full border border-gray-300 rounded px-2 py-1.5 text-sm ${duration!=='custom'?'bg-gray-100':''}`}/></div></div>
+    <div className="flex gap-1 mb-2">
+      {[['1w','1周'],['2w','2周'],['1m','1月'],['2m','2月'],['3m','3月']].map(([v,l]:any)=>
+        <button key={v} onClick={()=>handleDurationChange(v)} className={`px-2 py-0.5 text-xs rounded border ${duration===v?'bg-indigo-100 border-indigo-300 text-indigo-700':'border-gray-200 text-gray-500 hover:bg-gray-50'}`}>{l}</button>
+      )}
+    </div>
+    <div className="flex gap-2 mb-3 text-xs text-gray-500">
+      <span>或输入:</span>
+      <input type="number" min="1" max="52" value={customWeeks} onChange={e=>handleCustomWeeks(e.target.value)} placeholder="周数" className="w-16 border border-gray-300 rounded px-2 py-1 text-sm"/>
+      <span>周</span>
+      <span className="text-gray-300">/</span>
+      <input type="number" min="1" max="24" value={customMonths} onChange={e=>handleCustomMonths(e.target.value)} placeholder="月数" className="w-16 border border-gray-300 rounded px-2 py-1 text-sm"/>
+      <span>月</span>
+    </div>
+    <div className="flex gap-2 mb-3"><div className="flex-1"><label className="block text-sm text-gray-600 mb-1">开始</label><input type="text" value={startDate} onChange={e=>handleStartDateChange(e.target.value)} placeholder="YYYY-MM-DD" className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"/></div><div className="flex-1"><label className="block text-sm text-gray-600 mb-1">结束</label><input type="text" value={endDate} onChange={e=>setEndDate(e.target.value)} placeholder="YYYY-MM-DD" disabled={duration!=='custom'||!!customWeeks||!!customMonths} className={`w-full border border-gray-300 rounded px-2 py-1.5 text-sm ${duration!=='custom'||!!customWeeks||!!customMonths?'bg-gray-100':''}`}/></div></div>
     <label className="block text-sm text-gray-600 mb-1">投入比例: <span className="font-semibold text-indigo-600">{effort}%</span></label>
     <input type="range" min={10} max={200} step={10} value={effort} onChange={e=>setEffort(Number(e.target.value))} className="w-full mb-4"/>
     <div className="flex gap-2 justify-end"><button onClick={onClose} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded">取消</button><button onClick={handleSave} className="px-4 py-1.5 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-500">保存</button></div>
@@ -300,38 +386,60 @@ function EditAlloc({id,onClose,onDelete}:{id:string;onClose:()=>void;onDelete:()
   const [effort, setEffort] = useState(alloc.effortPercent);
   const [editing, setEditing] = useState(false);
   const [duration, setDuration] = useState('custom');
+  const [customWeeks, setCustomWeeks] = useState('');
+  const [customMonths, setCustomMonths] = useState('');
   
-  const handleDurationChange = (d: string) => {
-    setDuration(d);
-    if (d === 'custom') return;
-    const start = dayjs(startDate);
+  const calcEndDate = (s: string, dur: string, w: string, m: string) => {
+    const start = dayjs(s);
     let end;
-    switch(d) {
-      case '1w': end = start.add(6, 'day'); break;  // 1周=7天(含开始日)
-      case '2w': end = start.add(13, 'day'); break;  // 2周=14天(含开始日)
-      case '1m': end = start.add(1, 'month').subtract(1, 'day'); break;  // 1个月(含开始日)
-      case '2m': end = start.add(2, 'month').subtract(1, 'day'); break;
-      case '3m': end = start.add(3, 'month').subtract(1, 'day'); break;
-      default: return;
-    }
-    setEndDate(end.format('YYYY-MM-DD'));
-  };
-  
-  const handleStartDateChange = (d: string) => {
-    setStartDate(d);
-    if (duration !== 'custom') {
-      const start = dayjs(d);
-      let end;
-      switch(duration) {
+    if (dur !== 'custom') {
+      switch(dur) {
         case '1w': end = start.add(6, 'day'); break;
         case '2w': end = start.add(13, 'day'); break;
         case '1m': end = start.add(1, 'month').subtract(1, 'day'); break;
         case '2m': end = start.add(2, 'month').subtract(1, 'day'); break;
         case '3m': end = start.add(3, 'month').subtract(1, 'day'); break;
-        default: return;
+        default: return null;
       }
-      setEndDate(end.format('YYYY-MM-DD'));
+    } else if (w && Number(w) > 0) {
+      end = start.add(Number(w) * 7 - 1, 'day');
+    } else if (m && Number(m) > 0) {
+      end = start.add(Number(m), 'month').subtract(1, 'day');
+    } else {
+      return null;
     }
+    return end.format('YYYY-MM-DD');
+  };
+  
+  const handleDurationChange = (d: string) => {
+    setDuration(d);
+    setCustomWeeks('');
+    setCustomMonths('');
+    if (d === 'custom') return;
+    const end = calcEndDate(startDate, d, '', '');
+    if (end) setEndDate(end);
+  };
+  
+  const handleCustomWeeks = (v: string) => {
+    setCustomWeeks(v);
+    setCustomMonths('');
+    setDuration('custom');
+    const end = calcEndDate(startDate, 'custom', v, '');
+    if (end) setEndDate(end);
+  };
+  
+  const handleCustomMonths = (v: string) => {
+    setCustomMonths(v);
+    setCustomWeeks('');
+    setDuration('custom');
+    const end = calcEndDate(startDate, 'custom', '', v);
+    if (end) setEndDate(end);
+  };
+  
+  const handleStartDateChange = (d: string) => {
+    setStartDate(d);
+    const end = calcEndDate(d, duration, customWeeks, customMonths);
+    if (end) setEndDate(end);
   };
   
   if (!editing) return (<>
@@ -348,7 +456,7 @@ function EditAlloc({id,onClose,onDelete}:{id:string;onClose:()=>void;onDelete:()
     <label className="block text-sm text-gray-600 mb-1">需求名称</label>
     <input value={reqName} onChange={e=>setReqName(e.target.value)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm mb-3"/>
     <label className="block text-sm text-gray-600 mb-1">时长</label>
-    <select value={duration} onChange={e=>handleDurationChange(e.target.value)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm mb-3">
+    <select value={duration} onChange={e=>handleDurationChange(e.target.value)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm mb-2">
       <option value="custom">自定义</option>
       <option value="1w">1周</option>
       <option value="2w">2周</option>
@@ -356,7 +464,20 @@ function EditAlloc({id,onClose,onDelete}:{id:string;onClose:()=>void;onDelete:()
       <option value="2m">2个月</option>
       <option value="3m">3个月</option>
     </select>
-    <div className="flex gap-2 mb-3"><div className="flex-1"><label className="block text-sm text-gray-600 mb-1">开始</label><input type="text" value={startDate} onChange={e=>handleStartDateChange(e.target.value)} placeholder="YYYY-MM-DD" className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"/></div><div className="flex-1"><label className="block text-sm text-gray-600 mb-1">结束</label><input type="text" value={endDate} onChange={e=>setEndDate(e.target.value)} placeholder="YYYY-MM-DD" disabled={duration!=='custom'} className={`w-full border border-gray-300 rounded px-2 py-1.5 text-sm ${duration!=='custom'?'bg-gray-100':''}`}/></div></div>
+    <div className="flex gap-1 mb-2">
+      {[['1w','1周'],['2w','2周'],['1m','1月'],['2m','2月'],['3m','3月']].map(([v,l]:any)=>
+        <button key={v} onClick={()=>handleDurationChange(v)} className={`px-2 py-0.5 text-xs rounded border ${duration===v?'bg-indigo-100 border-indigo-300 text-indigo-700':'border-gray-200 text-gray-500 hover:bg-gray-50'}`}>{l}</button>
+      )}
+    </div>
+    <div className="flex gap-2 mb-3 text-xs text-gray-500">
+      <span>或输入:</span>
+      <input type="number" min="1" max="52" value={customWeeks} onChange={e=>handleCustomWeeks(e.target.value)} placeholder="周数" className="w-16 border border-gray-300 rounded px-2 py-1 text-sm"/>
+      <span>周</span>
+      <span className="text-gray-300">/</span>
+      <input type="number" min="1" max="24" value={customMonths} onChange={e=>handleCustomMonths(e.target.value)} placeholder="月数" className="w-16 border border-gray-300 rounded px-2 py-1 text-sm"/>
+      <span>月</span>
+    </div>
+    <div className="flex gap-2 mb-3"><div className="flex-1"><label className="block text-sm text-gray-600 mb-1">开始</label><input type="text" value={startDate} onChange={e=>handleStartDateChange(e.target.value)} placeholder="YYYY-MM-DD" className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"/></div><div className="flex-1"><label className="block text-sm text-gray-600 mb-1">结束</label><input type="text" value={endDate} onChange={e=>setEndDate(e.target.value)} placeholder="YYYY-MM-DD" disabled={duration!=='custom'||!!customWeeks||!!customMonths} className={`w-full border border-gray-300 rounded px-2 py-1.5 text-sm ${duration!=='custom'||!!customWeeks||!!customMonths?'bg-gray-100':''}`}/></div></div>
     <label className="block text-sm text-gray-600 mb-1">投入比例: <span className="font-semibold text-indigo-600">{effort}%</span></label>
     <input type="range" min={10} max={200} step={10} value={effort} onChange={e=>setEffort(Number(e.target.value))} className="w-full mb-4"/>
     <div className="flex gap-2 justify-end"><button onClick={()=>setEditing(false)} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded">取消</button><button onClick={()=>{updateAllocation(id,{requirementName:reqName,startDate,endDate,effortPercent:effort});setEditing(false);}} className="px-4 py-1.5 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-500">保存</button></div>
@@ -367,84 +488,114 @@ function ProjectTimelineView() {
   const projects = useStore((s:any) => s.projects);
   const persons = useStore((s:any) => s.persons);
   const allocations = useStore((s:any) => s.allocations);
-  const projSidebarRef = useRef<HTMLDivElement>(null);
-  const startDate = useMemo(() => dayjs().subtract(4, 'week').toDate(), []);
-  const periods = useMemo(() => generateWeeks(startDate, 26), [startDate]);
+  const startDate = useMemo(() => dayjs().subtract(TIMELINE_START_WEEKS, 'week').toDate(), []);
+  const periods = useMemo(() => generateWeeks(startDate, TIMELINE_START_WEEKS + TIMELINE_END_WEEKS), [startDate]);
   const today = dayjs().format('YYYY-MM-DD');
-  const reqMap = useMemo(() => { const m = new Map<string, any[]>(); for (const a of allocations) { const k = a.projectId+'__'+a.requirementName; if (!m.has(k)) m.set(k, []); m.get(k)!.push(a); } return m; }, [allocations]);
 
-  const handleProjTimelineScroll = useCallback(() => {
-    const el = document.getElementById('proj-timeline-scroll');
-    if (el && projSidebarRef.current) projSidebarRef.current.scrollTop = el.scrollTop;
-  }, []);
+  const reqMap = useMemo(() => {
+    const m = new Map<string, any[]>();
+    for (const a of allocations) {
+      const k = a.projectId + '__' + a.requirementName;
+      if (!m.has(k)) m.set(k, []);
+      m.get(k)!.push(a);
+    }
+    return m;
+  }, [allocations]);
 
+  // Build ordered row list + timeline lanes (Bug2 fix for ProjectTimelineView)
+  const { rowList, timelineLanes } = useMemo(() => {
+    const rows: { key: string; proj: any; reqName: string }[] = [];
+    for (const proj of projects) {
+      const entries = [...reqMap.entries()].filter(([k]) => k.startsWith(proj.id + '__'));
+      if (entries.length === 0) {
+        rows.push({ key: proj.id + '__empty', proj, reqName: '' });
+      } else {
+        for (const [key] of entries) {
+          rows.push({ key, proj, reqName: key.split('__')[1] });
+        }
+      }
+    }
+    const tLanes = new Map<string, { lanes: any[][]; rowH: number }>();
+    for (const [key, allocs] of reqMap) {
+      tLanes.set(key, computeLanes(allocs));
+    }
+    return { rowList: rows, timelineLanes: tLanes };
+  }, [projects, reqMap]);
+
+  // Bug1 fix: unified scroll container for ProjectTimelineView
   return (
-    <div className="h-full flex">
-      {/* Left fixed sidebar */}
-      <div className="w-48 shrink-0 flex flex-col border-r border-gray-200 bg-white z-20">
-        <div className="px-3 py-2 text-sm font-medium text-gray-600 border-b border-gray-200" style={{height:41}}>项目 / 需求</div>
-        <div className="flex-1 overflow-hidden" ref={projSidebarRef}>
-          {projects.length===0 && <div className="flex items-center justify-center h-40 text-gray-400 text-sm">暂无项目</div>}
-          {projects.map((proj:any) => {
-            const entries = [...reqMap.entries()].filter(([k])=>k.startsWith(proj.id+'__'));
-            if (entries.length===0) return (
-              <div key={proj.id} className="border-b border-gray-200 px-3 py-2 flex items-center gap-2 bg-gray-50" style={{height:ROW_H}}>
-                <span className="w-3 h-3 rounded-sm" style={{background:proj.color}}/>
-                <span className="text-sm font-medium">{proj.name}</span>
-                <span className="text-xs text-gray-400 ml-auto">无需求</span>
-              </div>
-            );
-            return entries.map(([key,allocs])=>{
-              const reqName = key.split('__')[1];
-              const sorted = [...allocs].sort((a:any,b:any)=>a.startDate.localeCompare(b.startDate));
-              const lanes:any[][]=[]; for(const alloc of sorted){let placed=false;for(const lane of lanes){if(alloc.startDate>lane[lane.length-1].endDate){lane.push(alloc);placed=true;break;}}if(!placed)lanes.push([alloc]);}
-              const rowH = Math.max(lanes.length,1)*ROW_H;
-              return (
-                <div key={key} className="border-b border-gray-200 px-3 flex items-center gap-2" style={{height:rowH}}>
-                  <span className="w-2 h-2 rounded-sm" style={{background:proj.color}}/>
+    <div className="h-full overflow-auto" id="proj-timeline-scroll">
+      <div style={{ minWidth: 192 + periods.length * CELL_W }}>
+        {/* Sticky header row */}
+        <div className="flex sticky top-0 z-20 bg-white border-b border-gray-200">
+          {/* Bug4 fix: unified HEADER_H for project view */}
+          <div className="w-48 shrink-0 sticky left-0 z-30 bg-white px-3 flex items-center text-sm font-medium text-gray-600 border-r border-gray-200" style={{ height: HEADER_H }}>项目 / 需求</div>
+          {periods.map(p => (
+            <div key={p} className={`flex items-center justify-center px-1 text-xs ${p===today?'bg-indigo-50 font-semibold text-indigo-600':''}`} style={{ minWidth: CELL_W, height: HEADER_H }}>
+              {dayjs(p).format('M/D')}
+            </div>
+          ))}
+        </div>
+        {/* Body rows — unified container */}
+        {rowList.map(({ key, proj, reqName }) => {
+          const isEmpty = key.endsWith('__empty');
+          const rowH = isEmpty ? ROW_H : (timelineLanes.get(key)?.rowH || ROW_H);
+          const lanes = isEmpty ? [] : (timelineLanes.get(key)?.lanes || []);
+          return (
+            <div key={key} className="flex border-b border-gray-200">
+              {/* Sticky left column */}
+              <div className="w-48 shrink-0 sticky left-0 z-10 bg-white border-r border-gray-200 px-3 flex items-center gap-2" style={{ height: rowH }}>
+                <span className="w-2 h-2 rounded-sm" style={{ background: proj.color }} />
+                {isEmpty ? (
+                  <div className="truncate">
+                    <span className="text-sm font-medium">{proj.name}</span>
+                    <span className="text-xs text-gray-400 ml-2">无需求</span>
+                  </div>
+                ) : (
                   <div className="truncate">
                     <div className="text-xs text-gray-400">{proj.name}</div>
                     <div className="text-sm">{reqName}</div>
                   </div>
-                </div>
-              );
-            });
-          })}
-        </div>
-      </div>
-
-      {/* Right scrollable timeline */}
-      <div className="flex-1 overflow-auto" id="proj-timeline-scroll" onScroll={handleProjTimelineScroll}>
-        <div style={{minWidth:periods.length*CELL_W}}>
-          {/* Sticky date header */}
-          <div className="flex bg-white sticky top-0 z-10 border-b border-gray-200">
-            {periods.map(p=><div key={p} className={`text-center px-1 py-2 text-xs ${p===today?'bg-indigo-50 font-semibold text-indigo-600':''}`} style={{minWidth:CELL_W}}>{dayjs(p).format('M/D')}</div>)}
-          </div>
-          {/* Timeline body rows */}
-          {projects.map((proj:any) => {
-            const entries = [...reqMap.entries()].filter(([k])=>k.startsWith(proj.id+'__'));
-            if (entries.length===0) return <div key={proj.id} className="border-b border-gray-200" style={{height:ROW_H,minWidth:periods.length*CELL_W}}/>;
-            return entries.map(([key,allocs])=>{
-              const sorted = [...allocs].sort((a:any,b:any)=>a.startDate.localeCompare(b.startDate));
-              const lanes:any[][]=[]; for(const alloc of sorted){let placed=false;for(const lane of lanes){if(alloc.startDate>lane[lane.length-1].endDate){lane.push(alloc);placed=true;break;}}if(!placed)lanes.push([alloc]);}
-              const rowH = Math.max(lanes.length,1)*ROW_H;
-              return (
-                <div key={key} className="flex relative border-b border-gray-200" style={{height:rowH,minWidth:periods.length*CELL_W}}>
-                  {periods.map(week=><div key={week} className={week===today?'bg-indigo-50':''} style={{minWidth:CELL_W,height:rowH}}/>)}
-                  {lanes.map((lane,li)=>lane.map((alloc:any)=>{
-                    const person=persons.find((p:any)=>p.id===alloc.personId);
-                    if(!person)return null;
-                    const si=periods.indexOf(dayjs(alloc.startDate).startOf('isoWeek').format('YYYY-MM-DD'));
-                    if(si<0)return null;
-                    const ei=periods.indexOf(dayjs(alloc.endDate).startOf('isoWeek').format('YYYY-MM-DD'));
-                    if(ei<0)return null;
-                    return <div key={alloc.id} className="absolute h-6 rounded cursor-pointer flex items-center px-1.5 text-white text-xs truncate hover:shadow-lg" style={{left:si*CELL_W,width:(ei-si+1)*CELL_W,top:li*ROW_H+6,background:proj.color}}>{person.name} {alloc.effortPercent}%</div>;
-                  }))}
-                </div>
-              );
-            });
-          })}
-        </div>
+                )}
+              </div>
+              {/* Timeline cells + allocations */}
+              <div className="flex-1 relative" style={{ height: rowH, minWidth: periods.length * CELL_W }}>
+                {/* Background cells */}
+                {periods.map((week, wi) => (
+                  <div
+                    key={week}
+                    className={week===today?'bg-indigo-50':''}
+                    style={{ position: 'absolute', left: wi * CELL_W, width: CELL_W, height: rowH }}
+                  />
+                ))}
+                {/* Allocation bars */}
+                {lanes.map((lane, li) => lane.map((alloc: any) => {
+                  const person = persons.find((p: any) => p.id === alloc.personId);
+                  if (!person) return null;
+                  const si = periods.indexOf(dayjs(alloc.startDate).startOf('isoWeek').format('YYYY-MM-DD'));
+                  if (si < 0) return null;
+                  const ei = periods.indexOf(dayjs(alloc.endDate).startOf('isoWeek').format('YYYY-MM-DD'));
+                  if (ei < 0) return null;
+                  // Bug3 fix: dynamic centering
+                  return (
+                    <div
+                      key={alloc.id}
+                      className="absolute h-6 rounded cursor-pointer flex items-center px-1.5 text-white text-xs truncate hover:shadow-lg"
+                      style={{
+                        left: si * CELL_W,
+                        width: (ei - si + 1) * CELL_W,
+                        top: li * ROW_H + (ROW_H - 24) / 2,
+                        background: proj.color
+                      }}
+                    >
+                      {person.name} {alloc.effortPercent}%
+                    </div>
+                  );
+                }))}
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -453,7 +604,7 @@ function ProjectTimelineView() {
 function AvailabilityView() {
   const persons = useStore((s:any) => s.persons);
   const allocations = useStore((s:any) => s.allocations);
-  const weeks = useMemo(() => generateWeeks(dayjs().subtract(4,'week').toDate(), 26), []);
+  const weeks = useMemo(() => generateWeeks(dayjs().subtract(TIMELINE_START_WEEKS,'week').toDate(), TIMELINE_START_WEEKS + TIMELINE_END_WEEKS), []);
   const getLoad = (pid:string, ws:string) => { const we = dayjs(ws).endOf('isoWeek').format('YYYY-MM-DD'); return allocations.filter((a:any) => a.personId===pid && a.startDate<=we && a.endDate>=ws).reduce((s:number,a:any) => s+a.effortPercent, 0); };
   const getColor = (l:number) => l===0?'#ECFDF5':l<=50?'#DBEAFE':l<=80?'#FEF3C7':l<=100?'#FED7AA':'#FEE2E2';
   return (
