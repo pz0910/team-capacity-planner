@@ -39,24 +39,22 @@ function migrateData(data: any): any {
   const allocations: any[] = data.allocations || [];
 
   // 从旧 allocations 中提取唯一 projectId+requirementName 组合
-  const reqMap = new Map<string, string>(); // key: projectId__reqName → requirementId
+  const reqMap = new Map<string, { reqId: string; phaseId: string }>(); // key: projectId__reqName → { reqId, phaseId }
   for (const alloc of allocations) {
     if (alloc.requirementName && !alloc.phaseId) {
       const key = alloc.projectId + '__' + alloc.requirementName;
       if (!reqMap.has(key)) {
         const reqId = crypto.randomUUID();
         const phaseId = crypto.randomUUID();
-        reqMap.set(key, reqId);
+        reqMap.set(key, { reqId, phaseId });
         requirements.push({ id: reqId, projectId: alloc.projectId, name: alloc.requirementName, createdAt: new Date().toISOString() });
         phases.push({ id: phaseId, requirementId: reqId, name: alloc.requirementName, createdAt: new Date().toISOString() });
         alloc.phaseId = phaseId;
         delete alloc.requirementName;
       } else {
-        // 同一个需求下，创建默认阶段
-        const reqId = reqMap.get(key)!;
-        const phaseId = crypto.randomUUID();
-        phases.push({ id: phaseId, requirementId: reqId, name: alloc.requirementName || '默认', createdAt: new Date().toISOString() });
-        alloc.phaseId = phaseId;
+        // 同一需求下，复用已有 Phase，不重复创建
+        const entry = reqMap.get(key)!;
+        alloc.phaseId = entry.phaseId;
         delete alloc.requirementName;
       }
     }
