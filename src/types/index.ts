@@ -20,14 +20,19 @@ export interface Project {
   createdAt: Date;
 }
 
-/** 需求/任务 */
+/** 需求（独立实体） */
 export interface Requirement {
-  id: string;
-  projectId: string;   // 所属项目
-  name: string;
-  effortDays: number;  // 预估工时（人天）
-  priority: 'high' | 'medium' | 'low';
-  status: 'pending' | 'in_progress' | 'done';
+  id: string;           // UUID
+  projectId: string;    // 所属项目
+  name: string;         // 需求名称
+  createdAt: Date;
+}
+
+/** 阶段 */
+export interface Phase {
+  id: string;           // UUID
+  requirementId: string; // 所属需求
+  name: string;         // 阶段名称，如 '设计'、'开发'、'测试'、'联调'
   createdAt: Date;
 }
 
@@ -35,10 +40,10 @@ export interface Requirement {
 export interface Allocation {
   id: string;
   personId: string;
-  requirementId: string;
-  startDate: string;   // YYYY-MM-DD
-  endDate: string;     // YYYY-MM-DD
-  effortPercent: number; // 0-100，投入百分比
+  phaseId: string;          // 引用阶段（替代 requirementName）
+  startDate: string;        // YYYY-MM-DD
+  endDate: string;          // YYYY-MM-DD
+  effortPercent: number;    // 0-200
   note?: string;
   createdAt: Date;
 }

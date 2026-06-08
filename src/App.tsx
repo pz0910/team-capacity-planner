@@ -7,37 +7,230 @@ import './index.css';
 dayjs.extend(isoWeek);
 
 const STORAGE_KEY = 'team-capacity-planner';
-function loadFromStorage() { try { const r = localStorage.getItem(STORAGE_KEY); if (r) return JSON.parse(r); } catch {} return null; }
-function saveToStorage(s: any) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ persons: s.persons, projects: s.projects, allocations: s.allocations })); } catch {} }
-const saved = loadFromStorage();
+
+function loadFromStorage() {
+  try {
+    const r = localStorage.getItem(STORAGE_KEY);
+    if (r) return JSON.parse(r);
+  } catch {}
+  return null;
+}
+
+function saveToStorage(s: any) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      persons: s.persons,
+      projects: s.projects,
+      requirements: s.requirements,
+      phases: s.phases,
+      allocations: s.allocations,
+    }));
+  } catch {}
+}
+
+/** 数据迁移：旧格式（allocation 含 requirementName）→ 新格式（phaseId） */
+function migrateData(data: any): any {
+  if (!data) return data;
+  // 如果已有 requirements/phases，无需迁移
+  if (data.requirements && data.phases) return data;
+
+  const requirements: any[] = data.requirements || [];
+  const phases: any[] = data.phases || [];
+  const allocations: any[] = data.allocations || [];
+
+  // 从旧 allocations 中提取唯一 projectId+requirementName 组合
+  const reqMap = new Map<string, string>(); // key: projectId__reqName → requirementId
+  for (const alloc of allocations) {
+    if (alloc.requirementName && !alloc.phaseId) {
+      const key = alloc.projectId + '__' + alloc.requirementName;
+      if (!reqMap.has(key)) {
+        const reqId = crypto.randomUUID();
+        const phaseId = crypto.randomUUID();
+        reqMap.set(key, reqId);
+        requirements.push({ id: reqId, projectId: alloc.projectId, name: alloc.requirementName, createdAt: new Date().toISOString() });
+        phases.push({ id: phaseId, requirementId: reqId, name: alloc.requirementName, createdAt: new Date().toISOString() });
+        alloc.phaseId = phaseId;
+        delete alloc.requirementName;
+      } else {
+        // 同一个需求下，创建默认阶段
+        const reqId = reqMap.get(key)!;
+        const phaseId = crypto.randomUUID();
+        phases.push({ id: phaseId, requirementId: reqId, name: alloc.requirementName || '默认', createdAt: new Date().toISOString() });
+        alloc.phaseId = phaseId;
+        delete alloc.requirementName;
+      }
+    }
+  }
+
+  return { ...data, requirements, phases, allocations };
+}
+
+const saved = migrateData(loadFromStorage());
 
 const useStore = create((set, get) => ({
   persons: (saved?.persons || []) as any[],
   projects: (saved?.projects || []) as any[],
+  requirements: (saved?.requirements || []) as any[],
+  phases: (saved?.phases || []) as any[],
   allocations: (saved?.allocations || []) as any[],
   viewMode: 'person',
   sidebarOpen: true,
   _save: () => saveToStorage(get()),
-  addPerson: (name: string) => { set((s: any) => ({ persons: [...s.persons, { id: crypto.randomUUID(), name, color: ['#4F46E5','#0891B2','#059669','#D97706','#DC2626','#7C3AED'][s.persons.length % 6] }] })); (get() as any)._save(); },
-  deletePerson: (id: string) => { set((s: any) => ({ persons: s.persons.filter((p: any) => p.id !== id), allocations: s.allocations.filter((a: any) => a.personId !== id) })); (get() as any)._save(); },
-  addProject: (name: string) => { set((s: any) => ({ projects: [...s.projects, { id: crypto.randomUUID(), name, color: ['#4F46E5','#0891B2','#059669','#D97706','#DC2626','#7C3AED'][s.projects.length % 6] }] })); (get() as any)._save(); },
-  deleteProject: (id: string) => { set((s: any) => ({ projects: s.projects.filter((p: any) => p.id !== id), allocations: s.allocations.filter((a: any) => a.projectId !== id) })); (get() as any)._save(); },
-  addAllocation: (a: any) => { set((s: any) => ({ allocations: [...s.allocations, { ...a, id: crypto.randomUUID() }] })); (get() as any)._save(); },
-  updateAllocation: (id: string, data: any) => { set((s: any) => ({ allocations: s.allocations.map((a: any) => a.id === id ? { ...a, ...data } : a) })); (get() as any)._save(); },
-  moveAllocation: (id: string, days: number) => { set((s: any) => ({ allocations: s.allocations.map((a: any) => { if (a.id !== id) return a; const start = dayjs(a.startDate).add(days, 'day'); const end = dayjs(a.endDate).add(days, 'day'); return { ...a, startDate: start.format('YYYY-MM-DD'), endDate: end.format('YYYY-MM-DD') }; }) })); (get() as any)._save(); },
-  deleteAllocation: (id: string) => { set((s: any) => ({ allocations: s.allocations.filter((a: any) => a.id !== id) })); (get() as any)._save(); },
+
+  // === 人员 CRUD ===
+  addPerson: (name: string) => {
+    set((s: any) => ({
+      persons: [...s.persons, { id: crypto.randomUUID(), name, color: ['#4F46E5','#0891B2','#059669','#D97706','#DC2626','#7C3AED'][s.persons.length % 6] }]
+    }));
+    (get() as any)._save();
+  },
+  deletePerson: (id: string) => {
+    set((s: any) => ({
+      persons: s.persons.filter((p: any) => p.id !== id),
+      allocations: s.allocations.filter((a: any) => a.personId !== id)
+    }));
+    (get() as any)._save();
+  },
+
+  // === 项目 CRUD ===
+  addProject: (name: string) => {
+    set((s: any) => ({
+      projects: [...s.projects, { id: crypto.randomUUID(), name, color: ['#4F46E5','#0891B2','#059669','#D97706','#DC2626','#7C3AED'][s.projects.length % 6] }]
+    }));
+    (get() as any)._save();
+  },
+  deleteProject: (id: string) => {
+    set((s: any) => {
+      // 级联删除：项目→需求→阶段→allocations
+      const reqIds = s.requirements.filter((r: any) => r.projectId === id).map((r: any) => r.id);
+      const phaseIds = s.phases.filter((p: any) => reqIds.includes(p.requirementId)).map((p: any) => p.id);
+      return {
+        projects: s.projects.filter((p: any) => p.id !== id),
+        requirements: s.requirements.filter((r: any) => r.projectId !== id),
+        phases: s.phases.filter((p: any) => !reqIds.includes(p.requirementId)),
+        allocations: s.allocations.filter((a: any) => !phaseIds.includes(a.phaseId)),
+      };
+    });
+    (get() as any)._save();
+  },
+
+  // === 需求 CRUD ===
+  addRequirement: (projectId: string, name: string) => {
+    const req = { id: crypto.randomUUID(), projectId, name, createdAt: new Date().toISOString() };
+    set((s: any) => ({ requirements: [...s.requirements, req] }));
+    (get() as any)._save();
+    return req;
+  },
+  deleteRequirement: (id: string) => {
+    set((s: any) => {
+      // 级联删除：需求→阶段→allocations
+      const phaseIds = s.phases.filter((p: any) => p.requirementId === id).map((p: any) => p.id);
+      return {
+        requirements: s.requirements.filter((r: any) => r.id !== id),
+        phases: s.phases.filter((p: any) => p.requirementId !== id),
+        allocations: s.allocations.filter((a: any) => !phaseIds.includes(a.phaseId)),
+      };
+    });
+    (get() as any)._save();
+  },
+  updateRequirement: (id: string, data: any) => {
+    set((s: any) => ({
+      requirements: s.requirements.map((r: any) => r.id === id ? { ...r, ...data } : r)
+    }));
+    (get() as any)._save();
+  },
+
+  // === 阶段 CRUD ===
+  addPhase: (requirementId: string, name: string) => {
+    const phase = { id: crypto.randomUUID(), requirementId, name, createdAt: new Date().toISOString() };
+    set((s: any) => ({ phases: [...s.phases, phase] }));
+    (get() as any)._save();
+    return phase;
+  },
+  deletePhase: (id: string) => {
+    set((s: any) => ({
+      phases: s.phases.filter((p: any) => p.id !== id),
+      allocations: s.allocations.filter((a: any) => a.phaseId !== id),
+    }));
+    (get() as any)._save();
+  },
+  updatePhase: (id: string, data: any) => {
+    set((s: any) => ({
+      phases: s.phases.map((p: any) => p.id === id ? { ...p, ...data } : p)
+    }));
+    (get() as any)._save();
+  },
+
+  // === 排期 CRUD ===
+  addAllocation: (a: any) => {
+    set((s: any) => ({ allocations: [...s.allocations, { ...a, id: crypto.randomUUID() }] }));
+    (get() as any)._save();
+  },
+  updateAllocation: (id: string, data: any) => {
+    set((s: any) => ({ allocations: s.allocations.map((a: any) => a.id === id ? { ...a, ...data } : a) }));
+    (get() as any)._save();
+  },
+  moveAllocation: (id: string, days: number) => {
+    set((s: any) => ({
+      allocations: s.allocations.map((a: any) => {
+        if (a.id !== id) return a;
+        const start = dayjs(a.startDate).add(days, 'day');
+        const end = dayjs(a.endDate).add(days, 'day');
+        return { ...a, startDate: start.format('YYYY-MM-DD'), endDate: end.format('YYYY-MM-DD') };
+      })
+    }));
+    (get() as any)._save();
+  },
+  deleteAllocation: (id: string) => {
+    set((s: any) => ({ allocations: s.allocations.filter((a: any) => a.id !== id) }));
+    (get() as any)._save();
+  },
+
+  // === 视图 ===
   setViewMode: (m: string) => set({ viewMode: m }),
   setSidebarOpen: (o: boolean) => set({ sidebarOpen: o }),
-  exportData: () => { const s = get() as any; return JSON.stringify({ persons: s.persons, projects: s.projects, allocations: s.allocations }, null, 2); },
-  importData: (json: string) => { try { const d = JSON.parse(json); if (d.persons && d.projects && d.allocations) { set({ persons: d.persons, projects: d.projects, allocations: d.allocations }); saveToStorage(d); return true; } } catch {} return false; },
-  clearAll: () => { set({ persons: [], projects: [], allocations: [] }); localStorage.removeItem(STORAGE_KEY); },
+
+  // === 导入导出 ===
+  exportData: () => {
+    const s = get() as any;
+    return JSON.stringify({
+      persons: s.persons,
+      projects: s.projects,
+      requirements: s.requirements,
+      phases: s.phases,
+      allocations: s.allocations,
+    }, null, 2);
+  },
+  importData: (json: string) => {
+    try {
+      let d = JSON.parse(json);
+      // 迁移旧格式
+      d = migrateData(d);
+      if (d.persons && d.projects && d.allocations) {
+        set({
+          persons: d.persons,
+          projects: d.projects,
+          requirements: d.requirements || [],
+          phases: d.phases || [],
+          allocations: d.allocations,
+        });
+        saveToStorage(get());
+        return true;
+      }
+    } catch {}
+    return false;
+  },
+  clearAll: () => {
+    set({ persons: [], projects: [], requirements: [], phases: [], allocations: [] });
+    localStorage.removeItem(STORAGE_KEY);
+  },
 }));
 
 const CELL_W = 80;
 const ROW_H = 36;
-const HEADER_H = 40; // Bug4 fix: unified header height for both sidebar and timeline
-const TIMELINE_START_WEEKS = 26; // 往前周数（半年）
-const TIMELINE_END_WEEKS = 52;   // 往后周数（一年）
+const HEADER_H = 40;
+const TIMELINE_START_WEEKS = 26;
+const TIMELINE_END_WEEKS = 52;
 
 function generateWeeks(start: Date, count: number): string[] {
   const weeks: string[] = [];
@@ -46,7 +239,6 @@ function generateWeeks(start: Date, count: number): string[] {
   return weeks;
 }
 
-/** Helper: compute lane assignment for a set of allocations (Bug2 fix) */
 function computeLanes(allocs: any[]): { lanes: any[][]; rowH: number } {
   const sorted = [...allocs].sort((a: any, b: any) => a.startDate.localeCompare(b.startDate));
   const lanes: any[][] = [];
@@ -64,6 +256,7 @@ function computeLanes(allocs: any[]): { lanes: any[][]; rowH: number } {
   return { lanes, rowH: Math.max(lanes.length, 1) * ROW_H };
 }
 
+// ==================== Header ====================
 function Header() {
   const viewMode = useStore((s: any) => s.viewMode);
   const setViewMode = useStore((s: any) => s.setViewMode);
@@ -82,22 +275,84 @@ function Header() {
   );
 }
 
+// ==================== Sidebar ====================
 function Sidebar() {
   const persons = useStore((s: any) => s.persons);
   const projects = useStore((s: any) => s.projects);
+  const requirements = useStore((s: any) => s.requirements);
+  const phases = useStore((s: any) => s.phases);
   const addPerson = useStore((s: any) => s.addPerson);
   const deletePerson = useStore((s: any) => s.deletePerson);
   const addProject = useStore((s: any) => s.addProject);
   const deleteProject = useStore((s: any) => s.deleteProject);
+  const addRequirement = useStore((s: any) => s.addRequirement);
+  const deleteRequirement = useStore((s: any) => s.deleteRequirement);
+  const addPhase = useStore((s: any) => s.addPhase);
+  const deletePhase = useStore((s: any) => s.deletePhase);
   const exportData = useStore((s: any) => s.exportData);
   const importData = useStore((s: any) => s.importData);
   const clearAll = useStore((s: any) => s.clearAll);
+
   const [np, setNp] = useState('');
   const [npr, setNpr] = useState('');
-  const handleExport = () => { const data = exportData(); const blob = new Blob([data], { type: 'application/json' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = '排期数据_' + dayjs().format('YYYYMMDD') + '.json'; a.click(); URL.revokeObjectURL(url); };
-  const handleImport = () => { const input = document.createElement('input'); input.type = 'file'; input.accept = '.json'; input.onchange = (e) => { const file = (e.target as HTMLInputElement).files?.[0]; if (file) { const reader = new FileReader(); reader.onload = (e) => { const text = e.target?.result as string; if (importData(text)) { alert('导入成功！'); } else { alert('导入失败'); } }; reader.readAsText(file); } }; input.click(); };
+  const [reqProjectId, setReqProjectId] = useState('');
+  const [reqName, setReqName] = useState('');
+  const [expandedReqId, setExpandedReqId] = useState<string | null>(null);
+  const [phaseName, setPhaseName] = useState('');
+
+  const handleExport = () => {
+    const data = exportData();
+    const blob = new Blob([data], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = '排期数据_' + dayjs().format('YYYYMMDD') + '.json';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+  const handleImport = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.onchange = (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const text = e.target?.result as string;
+          if (importData(text)) { alert('导入成功！'); } else { alert('导入失败'); }
+        };
+        reader.readAsText(file);
+      }
+    };
+    input.click();
+  };
+
+  const handleAddReq = () => {
+    if (!reqProjectId || !reqName.trim()) return;
+    addRequirement(reqProjectId, reqName.trim());
+    setReqName('');
+  };
+
+  const handleAddPhase = (reqId: string) => {
+    if (!phaseName.trim()) return;
+    addPhase(reqId, phaseName.trim());
+    setPhaseName('');
+  };
+
+  // 按项目分组需求
+  const reqsByProject = useMemo(() => {
+    const m = new Map<string, any[]>();
+    for (const r of requirements) {
+      if (!m.has(r.projectId)) m.set(r.projectId, []);
+      m.get(r.projectId)!.push(r);
+    }
+    return m;
+  }, [requirements]);
+
   return (
-    <aside className="w-56 bg-gray-800 text-gray-100 p-4 overflow-y-auto shrink-0">
+    <aside className="w-64 bg-gray-800 text-gray-100 p-4 overflow-y-auto shrink-0">
+      {/* 人员 */}
       <section className="mb-6">
         <h3 className="text-xs font-semibold text-gray-400 uppercase mb-2">人员</h3>
         <div className="flex gap-1 mb-2">
@@ -106,6 +361,8 @@ function Sidebar() {
         </div>
         <ul className="space-y-1">{persons.map((p:any)=><li key={p.id} className="flex items-center gap-2 group"><span className="w-3 h-3 rounded-full" style={{background:p.color}}/><span className="text-sm flex-1">{p.name}</span><button onClick={()=>deletePerson(p.id)} className="text-gray-500 hover:text-red-400 text-xs opacity-0 group-hover:opacity-100">✕</button></li>)}</ul>
       </section>
+
+      {/* 项目 */}
       <section className="mb-6">
         <h3 className="text-xs font-semibold text-gray-400 uppercase mb-2">项目</h3>
         <div className="flex gap-1 mb-2">
@@ -114,6 +371,65 @@ function Sidebar() {
         </div>
         <ul className="space-y-1">{projects.map((p:any)=><li key={p.id} className="flex items-center gap-2 group"><span className="w-3 h-3 rounded-sm" style={{background:p.color}}/><span className="text-sm flex-1">{p.name}</span><button onClick={()=>deleteProject(p.id)} className="text-gray-500 hover:text-red-400 text-xs opacity-0 group-hover:opacity-100">✕</button></li>)}</ul>
       </section>
+
+      {/* 需求/阶段管理 */}
+      <section className="mb-6">
+        <h3 className="text-xs font-semibold text-gray-400 uppercase mb-2">需求</h3>
+        <div className="flex gap-1 mb-2">
+          <select value={reqProjectId} onChange={e=>setReqProjectId(e.target.value)} className="flex-1 bg-gray-700 text-white text-sm px-2 py-1 rounded border-0 outline-none">
+            <option value="">选择项目</option>
+            {projects.map((p:any)=><option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+        </div>
+        <div className="flex gap-1 mb-2">
+          <input value={reqName} onChange={e=>setReqName(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')handleAddReq();}} placeholder="需求名称" className="flex-1 bg-gray-700 text-white text-sm px-2 py-1 rounded border-0 outline-none"/>
+          <button onClick={handleAddReq} className="bg-indigo-600 text-white text-sm px-2 py-1 rounded">+</button>
+        </div>
+        {/* 需求列表（按项目分组） */}
+        <div className="space-y-1">
+          {projects.map((proj: any) => {
+            const reqs = reqsByProject.get(proj.id) || [];
+            if (reqs.length === 0) return null;
+            return (
+              <div key={proj.id}>
+                {reqs.map((req: any) => {
+                  const reqPhases = phases.filter((p: any) => p.requirementId === req.id);
+                  const expanded = expandedReqId === req.id;
+                  return (
+                    <div key={req.id} className="mb-1">
+                      <div className="flex items-center gap-1 group cursor-pointer hover:bg-gray-700 rounded px-1 py-0.5" onClick={() => setExpandedReqId(expanded ? null : req.id)}>
+                        <span className="text-xs text-gray-500">{expanded ? '▾' : '▸'}</span>
+                        <span className="text-xs text-gray-400">{proj.name}</span>
+                        <span className="text-xs text-gray-400">/</span>
+                        <span className="text-sm flex-1">{req.name}</span>
+                        <button onClick={(e) => { e.stopPropagation(); deleteRequirement(req.id); }} className="text-gray-500 hover:text-red-400 text-xs opacity-0 group-hover:opacity-100">✕</button>
+                      </div>
+                      {expanded && (
+                        <div className="ml-4 space-y-0.5">
+                          {reqPhases.map((ph: any) => (
+                            <div key={ph.id} className="flex items-center gap-2 group hover:bg-gray-700 rounded px-1 py-0.5">
+                              <span className="text-xs text-gray-500">├─</span>
+                              <span className="text-sm flex-1">{ph.name}</span>
+                              <button onClick={() => deletePhase(ph.id)} className="text-gray-500 hover:text-red-400 text-xs opacity-0 group-hover:opacity-100">✕</button>
+                            </div>
+                          ))}
+                          <div className="flex gap-1 mt-1">
+                            <input value={expandedReqId === req.id ? phaseName : ''} onChange={e=>setPhaseName(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')handleAddPhase(req.id);}} placeholder="阶段名称" className="flex-1 bg-gray-700 text-white text-xs px-2 py-1 rounded border-0 outline-none" onClick={e=>e.stopPropagation()}/>
+                            <button onClick={()=>handleAddPhase(req.id)} className="bg-gray-600 text-white text-xs px-2 py-1 rounded">+</button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })}
+          {requirements.length === 0 && <p className="text-xs text-gray-500">暂无需求，请先添加</p>}
+        </div>
+      </section>
+
+      {/* 数据 */}
       <section>
         <h3 className="text-xs font-semibold text-gray-400 uppercase mb-2">数据</h3>
         <div className="flex flex-col gap-2">
@@ -126,14 +442,15 @@ function Sidebar() {
   );
 }
 
+// ==================== TimelineView (按人排期) ====================
 function TimelineView() {
   const persons = useStore((s: any) => s.persons);
   const projects = useStore((s: any) => s.projects);
+  const requirements = useStore((s: any) => s.requirements);
+  const phases = useStore((s: any) => s.phases);
   const allocations = useStore((s: any) => s.allocations);
-  const addAllocation = useStore((s: any) => s.addAllocation);
-  const deleteAllocation = useStore((s: any) => s.deleteAllocation);
-  const updateAllocation = useStore((s: any) => s.updateAllocation);
   const moveAllocation = useStore((s: any) => s.moveAllocation);
+  const deleteAllocation = useStore((s: any) => s.deleteAllocation);
   const [showModal, setShowModal] = useState<any>(null);
   const [editId, setEditId] = useState<string|null>(null);
   const dragRef = useRef<{allocId:string;startX:number}|null>(null);
@@ -142,7 +459,6 @@ function TimelineView() {
   const periods = useMemo(() => generateWeeks(startDate, TIMELINE_START_WEEKS + TIMELINE_END_WEEKS), [startDate]);
   const today = dayjs().format('YYYY-MM-DD');
 
-  // Bug2 fix: single useMemo for lanes/rowH — eliminates duplicate computation
   const personLanes = useMemo(() => {
     const map = new Map<string, { lanes: any[][]; rowH: number }>();
     for (const person of persons) {
@@ -181,14 +497,19 @@ function TimelineView() {
     e.dataTransfer.dropEffect = 'move';
   }, []);
 
-  // Bug1 fix: unified scroll container with sticky left column
-  // No more handlePersonTimelineScroll — single container eliminates drift
+  // 辅助：获取 allocation 的需求名/阶段名
+  const getAllocLabel = (alloc: any) => {
+    const phase = phases.find((p: any) => p.id === alloc.phaseId);
+    if (!phase) return alloc.requirementName || '?';
+    const req = requirements.find((r: any) => r.id === phase.requirementId);
+    return (req?.name || '?') + '/' + (phase.name || '?');
+  };
+
   return (
     <div className="h-full overflow-auto" id="person-timeline-scroll">
       <div style={{ minWidth: 128 + periods.length * CELL_W }}>
         {/* Sticky header row */}
         <div className="flex sticky top-0 z-20 bg-white border-b border-gray-200">
-          {/* Bug4 fix: HEADER_H constant + flex items-center instead of py-2 */}
           <div className="w-32 shrink-0 sticky left-0 z-30 bg-white px-3 flex items-center text-sm font-medium text-gray-600 border-r border-gray-200" style={{ height: HEADER_H }}>人员</div>
           {periods.map(p => (
             <div key={p} className={`flex items-center justify-center px-1 text-xs border-r-0 ${p===today?'bg-indigo-50 font-semibold text-indigo-600':''}`} style={{ minWidth: CELL_W, height: HEADER_H }}>
@@ -196,7 +517,7 @@ function TimelineView() {
             </div>
           ))}
         </div>
-        {/* Body rows — unified container, no separate sidebar */}
+        {/* Body rows */}
         {persons.length===0 && (
           <div className="flex items-center justify-center h-40 text-gray-400 text-xs px-2 text-center">
             ← 在左侧添加人员和项目，然后点击时间轴分配排期
@@ -206,14 +527,11 @@ function TimelineView() {
           const { lanes, rowH } = personLanes.get(person.id) || { lanes: [], rowH: ROW_H };
           return (
             <div key={person.id} className="flex border-b border-gray-200">
-              {/* Sticky left column — person name */}
               <div className="w-32 shrink-0 sticky left-0 z-10 bg-white border-r border-gray-200 px-3 flex items-center gap-2" style={{ height: rowH }}>
                 <span className="w-2 h-2 rounded-full" style={{ background: person.color }} />
                 <span className="text-sm truncate">{person.name}</span>
               </div>
-              {/* Timeline cells + allocations */}
               <div className="flex-1 relative" style={{ height: rowH, minWidth: periods.length * CELL_W }}>
-                {/* Background cells */}
                 {periods.map(week => {
                   const load = getLoad(person.id, week);
                   const bg = load>100?'#FEE2E2':load>80?'#FEF3C7':load>0?'#ECFDF5':'';
@@ -228,7 +546,6 @@ function TimelineView() {
                     />
                   );
                 })}
-                {/* Allocation bars */}
                 {lanes.map((lane, li) => lane.map((alloc: any) => {
                   const proj = projects.find((p: any) => p.id === alloc.projectId);
                   if (!proj) return null;
@@ -236,7 +553,7 @@ function TimelineView() {
                   if (si < 0) return null;
                   const ei = periods.indexOf(dayjs(alloc.endDate).startOf('isoWeek').format('YYYY-MM-DD'));
                   if (ei < 0) return null;
-                  // Bug3 fix: dynamic centering instead of hardcoded +6
+                  const label = getAllocLabel(alloc);
                   return (
                     <div
                       key={alloc.id}
@@ -249,10 +566,10 @@ function TimelineView() {
                         top: li * ROW_H + (ROW_H - 24) / 2,
                         background: proj.color
                       }}
-                      title={proj.name + ' - ' + alloc.requirementName + ' (' + alloc.effortPercent + '%)'}
+                      title={label + ' (' + alloc.effortPercent + '%)'}
                       onClick={e => { e.stopPropagation(); setEditId(alloc.id); }}
                     >
-                      {proj.name} {alloc.requirementName} {alloc.effortPercent}%
+                      {label} {alloc.effortPercent}%
                     </div>
                   );
                 }))}
@@ -273,18 +590,27 @@ function TimelineView() {
   );
 }
 
+// ==================== NewAlloc ====================
 function NewAlloc({personId,date,onClose}:{personId:string;date:string;onClose:()=>void}) {
   const projects = useStore((s:any) => s.projects);
+  const requirements = useStore((s:any) => s.requirements);
+  const phases = useStore((s:any) => s.phases);
   const addAllocation = useStore((s:any) => s.addAllocation);
   const [projectId, setProjectId] = useState('');
-  const [reqName, setReqName] = useState('');
-  const [startDate, setStartDate] = useState(date);
-  const [endDate, setEndDate] = useState(date);
+  const [requirementId, setRequirementId] = useState('');
+  const [phaseId, setPhaseId] = useState('');
+  // 默认开始日期 = 当天所在周的周一
+  const [startDate, setStartDate] = useState(dayjs().startOf('isoWeek').format('YYYY-MM-DD'));
+  const [endDate, setEndDate] = useState(dayjs().startOf('isoWeek').format('YYYY-MM-DD'));
   const [effort, setEffort] = useState(100);
   const [duration, setDuration] = useState('custom');
   const [customWeeks, setCustomWeeks] = useState('');
   const [customMonths, setCustomMonths] = useState('');
-  
+
+  // 级联过滤
+  const filteredReqs = useMemo(() => requirements.filter((r:any) => r.projectId === projectId), [requirements, projectId]);
+  const filteredPhases = useMemo(() => phases.filter((p:any) => p.requirementId === requirementId), [phases, requirementId]);
+
   const calcEndDate = (s: string, dur: string, w: string, m: string) => {
     const start = dayjs(s);
     let end;
@@ -306,7 +632,7 @@ function NewAlloc({personId,date,onClose}:{personId:string;date:string;onClose:(
     }
     return end.format('YYYY-MM-DD');
   };
-  
+
   const handleDurationChange = (d: string) => {
     setDuration(d);
     setCustomWeeks('');
@@ -315,7 +641,7 @@ function NewAlloc({personId,date,onClose}:{personId:string;date:string;onClose:(
     const end = calcEndDate(startDate, d, '', '');
     if (end) setEndDate(end);
   };
-  
+
   const handleCustomWeeks = (v: string) => {
     setCustomWeeks(v);
     setCustomMonths('');
@@ -323,7 +649,7 @@ function NewAlloc({personId,date,onClose}:{personId:string;date:string;onClose:(
     const end = calcEndDate(startDate, 'custom', v, '');
     if (end) setEndDate(end);
   };
-  
+
   const handleCustomMonths = (v: string) => {
     setCustomMonths(v);
     setCustomWeeks('');
@@ -331,20 +657,56 @@ function NewAlloc({personId,date,onClose}:{personId:string;date:string;onClose:(
     const end = calcEndDate(startDate, 'custom', '', v);
     if (end) setEndDate(end);
   };
-  
+
   const handleStartDateChange = (d: string) => {
     setStartDate(d);
     const end = calcEndDate(d, duration, customWeeks, customMonths);
     if (end) setEndDate(end);
   };
-  
-  const handleSave = () => { if (!projectId || !reqName.trim()) return; addAllocation({ personId, projectId, requirementName: reqName.trim(), startDate, endDate, effortPercent: effort }); onClose(); };
+
+  // 项目变更时重置需求和阶段
+  const handleProjectChange = (pid: string) => {
+    setProjectId(pid);
+    setRequirementId('');
+    setPhaseId('');
+  };
+
+  // 需求变更时重置阶段
+  const handleReqChange = (rid: string) => {
+    setRequirementId(rid);
+    setPhaseId('');
+  };
+
+  const handleSave = () => {
+    if (!phaseId) return;
+    const phase = phases.find((p:any) => p.id === phaseId);
+    if (!phase) return;
+    const req = requirements.find((r:any) => r.id === phase.requirementId);
+    if (!req) return;
+    addAllocation({ personId, projectId: req.projectId, phaseId, startDate, endDate, effortPercent: effort });
+    onClose();
+  };
+
   return (<>
     <h2 className="text-base font-semibold mb-4">新建排期</h2>
     <label className="block text-sm text-gray-600 mb-1">项目</label>
-    <select value={projectId} onChange={e=>setProjectId(e.target.value)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm mb-3"><option value="">选择项目</option>{projects.map((p:any)=><option key={p.id} value={p.id}>{p.name}</option>)}</select>
-    <label className="block text-sm text-gray-600 mb-1">需求名称</label>
-    <input value={reqName} onChange={e=>setReqName(e.target.value)} placeholder="需求名称" className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm mb-3"/>
+    <select value={projectId} onChange={e=>handleProjectChange(e.target.value)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm mb-3">
+      <option value="">选择项目</option>
+      {projects.map((p:any)=><option key={p.id} value={p.id}>{p.name}</option>)}
+    </select>
+
+    <label className="block text-sm text-gray-600 mb-1">需求</label>
+    <select value={requirementId} onChange={e=>handleReqChange(e.target.value)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm mb-3" disabled={!projectId}>
+      <option value="">{!projectId ? '请先选择项目' : filteredReqs.length === 0 ? '请先在侧边栏添加需求' : '选择需求'}</option>
+      {filteredReqs.map((r:any)=><option key={r.id} value={r.id}>{r.name}</option>)}
+    </select>
+
+    <label className="block text-sm text-gray-600 mb-1">阶段</label>
+    <select value={phaseId} onChange={e=>setPhaseId(e.target.value)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm mb-3" disabled={!requirementId}>
+      <option value="">{!requirementId ? '请先选择需求' : filteredPhases.length === 0 ? '请先在侧边栏添加阶段' : '选择阶段'}</option>
+      {filteredPhases.map((p:any)=><option key={p.id} value={p.id}>{p.name}</option>)}
+    </select>
+
     <label className="block text-sm text-gray-600 mb-1">时长</label>
     <select value={duration} onChange={e=>handleDurationChange(e.target.value)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm mb-2">
       <option value="custom">自定义</option>
@@ -370,17 +732,24 @@ function NewAlloc({personId,date,onClose}:{personId:string;date:string;onClose:(
     <div className="flex gap-2 mb-3"><div className="flex-1"><label className="block text-sm text-gray-600 mb-1">开始</label><input type="text" value={startDate} onChange={e=>handleStartDateChange(e.target.value)} placeholder="YYYY-MM-DD" className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"/></div><div className="flex-1"><label className="block text-sm text-gray-600 mb-1">结束</label><input type="text" value={endDate} onChange={e=>setEndDate(e.target.value)} placeholder="YYYY-MM-DD" disabled={duration!=='custom'||!!customWeeks||!!customMonths} className={`w-full border border-gray-300 rounded px-2 py-1.5 text-sm ${duration!=='custom'||!!customWeeks||!!customMonths?'bg-gray-100':''}`}/></div></div>
     <label className="block text-sm text-gray-600 mb-1">投入比例: <span className="font-semibold text-indigo-600">{effort}%</span></label>
     <input type="range" min={10} max={200} step={10} value={effort} onChange={e=>setEffort(Number(e.target.value))} className="w-full mb-4"/>
-    <div className="flex gap-2 justify-end"><button onClick={onClose} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded">取消</button><button onClick={handleSave} className="px-4 py-1.5 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-500">保存</button></div>
+    <div className="flex gap-2 justify-end"><button onClick={onClose} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded">取消</button><button onClick={handleSave} disabled={!phaseId} className={`px-4 py-1.5 text-sm rounded ${phaseId?'bg-indigo-600 text-white hover:bg-indigo-500':'bg-gray-300 text-gray-500 cursor-not-allowed'}`}>保存</button></div>
   </>);
 }
 
+// ==================== EditAlloc ====================
 function EditAlloc({id,onClose,onDelete}:{id:string;onClose:()=>void;onDelete:()=>void}) {
   const alloc = useStore((s:any) => s.allocations.find((a:any) => a.id === id));
   const updateAllocation = useStore((s:any) => s.updateAllocation);
   const projects = useStore((s:any) => s.projects);
+  const requirements = useStore((s:any) => s.requirements);
+  const phases = useStore((s:any) => s.phases);
   if (!alloc) return null;
-  const proj = projects.find((p:any) => p.id === alloc.projectId);
-  const [reqName, setReqName] = useState(alloc.requirementName);
+
+  const phase = phases.find((p:any) => p.id === alloc.phaseId);
+  const req = phase ? requirements.find((r:any) => r.id === phase.requirementId) : null;
+  const proj = req ? projects.find((p:any) => p.id === req.projectId) : projects.find((p:any) => p.id === alloc.projectId);
+
+  const [editPhaseId, setEditPhaseId] = useState(alloc.phaseId);
   const [startDate, setStartDate] = useState(alloc.startDate);
   const [endDate, setEndDate] = useState(alloc.endDate);
   const [effort, setEffort] = useState(alloc.effortPercent);
@@ -388,7 +757,13 @@ function EditAlloc({id,onClose,onDelete}:{id:string;onClose:()=>void;onDelete:()
   const [duration, setDuration] = useState('custom');
   const [customWeeks, setCustomWeeks] = useState('');
   const [customMonths, setCustomMonths] = useState('');
-  
+
+  // 编辑时的级联选择
+  const [editProjectId, setEditProjectId] = useState(req?.projectId || '');
+  const [editRequirementId, setEditRequirementId] = useState(req?.id || '');
+  const filteredReqs = useMemo(() => requirements.filter((r:any) => r.projectId === editProjectId), [requirements, editProjectId]);
+  const filteredPhases = useMemo(() => phases.filter((p:any) => p.requirementId === editRequirementId), [phases, editRequirementId]);
+
   const calcEndDate = (s: string, dur: string, w: string, m: string) => {
     const start = dayjs(s);
     let end;
@@ -410,7 +785,7 @@ function EditAlloc({id,onClose,onDelete}:{id:string;onClose:()=>void;onDelete:()
     }
     return end.format('YYYY-MM-DD');
   };
-  
+
   const handleDurationChange = (d: string) => {
     setDuration(d);
     setCustomWeeks('');
@@ -419,7 +794,7 @@ function EditAlloc({id,onClose,onDelete}:{id:string;onClose:()=>void;onDelete:()
     const end = calcEndDate(startDate, d, '', '');
     if (end) setEndDate(end);
   };
-  
+
   const handleCustomWeeks = (v: string) => {
     setCustomWeeks(v);
     setCustomMonths('');
@@ -427,7 +802,7 @@ function EditAlloc({id,onClose,onDelete}:{id:string;onClose:()=>void;onDelete:()
     const end = calcEndDate(startDate, 'custom', v, '');
     if (end) setEndDate(end);
   };
-  
+
   const handleCustomMonths = (v: string) => {
     setCustomMonths(v);
     setCustomWeeks('');
@@ -435,17 +810,23 @@ function EditAlloc({id,onClose,onDelete}:{id:string;onClose:()=>void;onDelete:()
     const end = calcEndDate(startDate, 'custom', '', v);
     if (end) setEndDate(end);
   };
-  
+
   const handleStartDateChange = (d: string) => {
     setStartDate(d);
     const end = calcEndDate(d, duration, customWeeks, customMonths);
     if (end) setEndDate(end);
   };
-  
+
+  // 获取显示标签
+  const getLabel = () => {
+    if (!phase || !req) return alloc.requirementName || '?';
+    return req.name + '/' + phase.name;
+  };
+
   if (!editing) return (<>
     <h2 className="text-base font-semibold mb-4">排期详情</h2>
     <p className="text-sm text-gray-600 mb-1">项目: {proj?.name}</p>
-    <p className="text-sm text-gray-600 mb-1">需求: {alloc.requirementName}</p>
+    <p className="text-sm text-gray-600 mb-1">需求/阶段: {getLabel()}</p>
     <p className="text-sm text-gray-600 mb-1">时间: {alloc.startDate} ~ {alloc.endDate}</p>
     <p className="text-sm text-gray-600 mb-4">投入: {alloc.effortPercent}%</p>
     <div className="flex gap-2 justify-end"><button onClick={onDelete} className="px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 rounded">删除</button><button onClick={()=>setEditing(true)} className="px-3 py-1.5 text-sm text-indigo-600 hover:bg-indigo-50 rounded">编辑</button><button onClick={onClose} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded">关闭</button></div>
@@ -453,8 +834,19 @@ function EditAlloc({id,onClose,onDelete}:{id:string;onClose:()=>void;onDelete:()
   return (<>
     <h2 className="text-base font-semibold mb-4">编辑排期</h2>
     <p className="text-sm text-gray-600 mb-3">项目: {proj?.name}</p>
-    <label className="block text-sm text-gray-600 mb-1">需求名称</label>
-    <input value={reqName} onChange={e=>setReqName(e.target.value)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm mb-3"/>
+
+    <label className="block text-sm text-gray-600 mb-1">需求</label>
+    <select value={editRequirementId} onChange={e=>{setEditRequirementId(e.target.value);setEditPhaseId('');}} className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm mb-3">
+      <option value="">{filteredReqs.length === 0 ? '无需求' : '选择需求'}</option>
+      {filteredReqs.map((r:any)=><option key={r.id} value={r.id}>{r.name}</option>)}
+    </select>
+
+    <label className="block text-sm text-gray-600 mb-1">阶段</label>
+    <select value={editPhaseId} onChange={e=>setEditPhaseId(e.target.value)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm mb-3">
+      <option value="">{filteredPhases.length === 0 ? '无阶段' : '选择阶段'}</option>
+      {filteredPhases.map((p:any)=><option key={p.id} value={p.id}>{p.name}</option>)}
+    </select>
+
     <label className="block text-sm text-gray-600 mb-1">时长</label>
     <select value={duration} onChange={e=>handleDurationChange(e.target.value)} className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm mb-2">
       <option value="custom">自定义</option>
@@ -480,55 +872,72 @@ function EditAlloc({id,onClose,onDelete}:{id:string;onClose:()=>void;onDelete:()
     <div className="flex gap-2 mb-3"><div className="flex-1"><label className="block text-sm text-gray-600 mb-1">开始</label><input type="text" value={startDate} onChange={e=>handleStartDateChange(e.target.value)} placeholder="YYYY-MM-DD" className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"/></div><div className="flex-1"><label className="block text-sm text-gray-600 mb-1">结束</label><input type="text" value={endDate} onChange={e=>setEndDate(e.target.value)} placeholder="YYYY-MM-DD" disabled={duration!=='custom'||!!customWeeks||!!customMonths} className={`w-full border border-gray-300 rounded px-2 py-1.5 text-sm ${duration!=='custom'||!!customWeeks||!!customMonths?'bg-gray-100':''}`}/></div></div>
     <label className="block text-sm text-gray-600 mb-1">投入比例: <span className="font-semibold text-indigo-600">{effort}%</span></label>
     <input type="range" min={10} max={200} step={10} value={effort} onChange={e=>setEffort(Number(e.target.value))} className="w-full mb-4"/>
-    <div className="flex gap-2 justify-end"><button onClick={()=>setEditing(false)} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded">取消</button><button onClick={()=>{updateAllocation(id,{requirementName:reqName,startDate,endDate,effortPercent:effort});setEditing(false);}} className="px-4 py-1.5 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-500">保存</button></div>
+    <div className="flex gap-2 justify-end"><button onClick={()=>setEditing(false)} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded">取消</button><button onClick={()=>{updateAllocation(id,{phaseId:editPhaseId,startDate,endDate,effortPercent:effort});setEditing(false);}} className="px-4 py-1.5 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-500">保存</button></div>
   </>);
 }
 
+// ==================== ProjectTimelineView (按项目排期) ====================
 function ProjectTimelineView() {
   const projects = useStore((s:any) => s.projects);
   const persons = useStore((s:any) => s.persons);
+  const requirements = useStore((s:any) => s.requirements);
+  const phases = useStore((s:any) => s.phases);
   const allocations = useStore((s:any) => s.allocations);
   const startDate = useMemo(() => dayjs().subtract(TIMELINE_START_WEEKS, 'week').toDate(), []);
   const periods = useMemo(() => generateWeeks(startDate, TIMELINE_START_WEEKS + TIMELINE_END_WEEKS), [startDate]);
   const today = dayjs().format('YYYY-MM-DD');
 
-  const reqMap = useMemo(() => {
+  // 按 phaseId 分组 allocations
+  const phaseAllocMap = useMemo(() => {
     const m = new Map<string, any[]>();
     for (const a of allocations) {
-      const k = a.projectId + '__' + a.requirementName;
-      if (!m.has(k)) m.set(k, []);
-      m.get(k)!.push(a);
+      if (!m.has(a.phaseId)) m.set(a.phaseId, []);
+      m.get(a.phaseId)!.push(a);
     }
     return m;
   }, [allocations]);
 
-  // Build ordered row list + timeline lanes (Bug2 fix for ProjectTimelineView)
+  // 构建行列表：需求作为分组标题，阶段作为数据行
   const { rowList, timelineLanes } = useMemo(() => {
-    const rows: { key: string; proj: any; reqName: string }[] = [];
+    type RowItem = { type: 'req_header'; key: string; proj: any; req: any } | { type: 'phase'; key: string; proj: any; req: any; phase: any };
+    const rows: RowItem[] = [];
+    const tLanes = new Map<string, { lanes: any[][]; rowH: number }>();
+
     for (const proj of projects) {
-      const entries = [...reqMap.entries()].filter(([k]) => k.startsWith(proj.id + '__'));
-      if (entries.length === 0) {
-        rows.push({ key: proj.id + '__empty', proj, reqName: '' });
+      const projReqs = requirements.filter((r: any) => r.projectId === proj.id);
+      if (projReqs.length === 0) {
+        // 项目无需求，显示空行
+        rows.push({ type: 'req_header', key: proj.id + '__empty', proj, req: null });
       } else {
-        for (const [key] of entries) {
-          rows.push({ key, proj, reqName: key.split('__')[1] });
+        for (const req of projReqs) {
+          // 需求标题行
+          rows.push({ type: 'req_header', key: 'req_' + req.id, proj, req });
+          // 阶段行
+          const reqPhases = phases.filter((p: any) => p.requirementId === req.id);
+          if (reqPhases.length === 0) {
+            // 需求无阶段，显示空行
+            rows.push({ type: 'phase', key: 'phase_empty_' + req.id, proj, req, phase: null });
+          } else {
+            for (const phase of reqPhases) {
+              const allocs = phaseAllocMap.get(phase.id) || [];
+              const laneKey = 'phase_' + phase.id;
+              rows.push({ type: 'phase', key: laneKey, proj, req, phase });
+              if (allocs.length > 0) {
+                tLanes.set(laneKey, computeLanes(allocs));
+              }
+            }
+          }
         }
       }
     }
-    const tLanes = new Map<string, { lanes: any[][]; rowH: number }>();
-    for (const [key, allocs] of reqMap) {
-      tLanes.set(key, computeLanes(allocs));
-    }
     return { rowList: rows, timelineLanes: tLanes };
-  }, [projects, reqMap]);
+  }, [projects, requirements, phases, phaseAllocMap]);
 
-  // Bug1 fix: unified scroll container for ProjectTimelineView
   return (
     <div className="h-full overflow-auto" id="proj-timeline-scroll">
       <div style={{ minWidth: 192 + periods.length * CELL_W }}>
         {/* Sticky header row */}
         <div className="flex sticky top-0 z-20 bg-white border-b border-gray-200">
-          {/* Bug4 fix: unified HEADER_H for project view */}
           <div className="w-48 shrink-0 sticky left-0 z-30 bg-white px-3 flex items-center text-sm font-medium text-gray-600 border-r border-gray-200" style={{ height: HEADER_H }}>项目 / 需求</div>
           {periods.map(p => (
             <div key={p} className={`flex items-center justify-center px-1 text-xs ${p===today?'bg-indigo-50 font-semibold text-indigo-600':''}`} style={{ minWidth: CELL_W, height: HEADER_H }}>
@@ -536,26 +945,38 @@ function ProjectTimelineView() {
             </div>
           ))}
         </div>
-        {/* Body rows — unified container */}
-        {rowList.map(({ key, proj, reqName }) => {
-          const isEmpty = key.endsWith('__empty');
-          const rowH = isEmpty ? ROW_H : (timelineLanes.get(key)?.rowH || ROW_H);
-          const lanes = isEmpty ? [] : (timelineLanes.get(key)?.lanes || []);
+        {/* Body rows */}
+        {rowList.map((row) => {
+          const isReqHeader = row.type === 'req_header';
+          const isEmpty = row.key.endsWith('__empty') || row.key.startsWith('phase_empty_');
+          const rowH = isReqHeader ? ROW_H : (isEmpty ? ROW_H : (timelineLanes.get(row.key)?.rowH || ROW_H));
+          const lanes = isReqHeader ? [] : (isEmpty ? [] : (timelineLanes.get(row.key)?.lanes || []));
+
           return (
-            <div key={key} className="flex border-b border-gray-200">
+            <div key={row.key} className={`flex border-b border-gray-200 ${isReqHeader ? 'bg-gray-50' : ''}`}>
               {/* Sticky left column */}
               <div className="w-48 shrink-0 sticky left-0 z-10 bg-white border-r border-gray-200 px-3 flex items-center gap-2" style={{ height: rowH }}>
-                <span className="w-2 h-2 rounded-sm" style={{ background: proj.color }} />
-                {isEmpty ? (
-                  <div className="truncate">
-                    <span className="text-sm font-medium">{proj.name}</span>
-                    <span className="text-xs text-gray-400 ml-2">无需求</span>
-                  </div>
+                {isReqHeader ? (
+                  <>
+                    <span className="w-2 h-2 rounded-sm" style={{ background: row.proj.color }} />
+                    <div className="truncate">
+                      <span className="text-xs text-gray-400">{row.proj.name}</span>
+                      {row.req ? (
+                        <span className="text-sm font-medium ml-1">{row.req.name}</span>
+                      ) : (
+                        <span className="text-xs text-gray-400 ml-1">无需求</span>
+                      )}
+                    </div>
+                  </>
                 ) : (
-                  <div className="truncate">
-                    <div className="text-xs text-gray-400">{proj.name}</div>
-                    <div className="text-sm">{reqName}</div>
-                  </div>
+                  <>
+                    <span className="text-gray-400 text-xs">└</span>
+                    {row.phase ? (
+                      <span className="text-sm">{row.phase.name}</span>
+                    ) : (
+                      <span className="text-xs text-gray-400">无阶段</span>
+                    )}
+                  </>
                 )}
               </div>
               {/* Timeline cells + allocations */}
@@ -569,14 +990,13 @@ function ProjectTimelineView() {
                   />
                 ))}
                 {/* Allocation bars */}
-                {lanes.map((lane, li) => lane.map((alloc: any) => {
+                {!isReqHeader && row.phase && lanes.map((lane, li) => lane.map((alloc: any) => {
                   const person = persons.find((p: any) => p.id === alloc.personId);
                   if (!person) return null;
                   const si = periods.indexOf(dayjs(alloc.startDate).startOf('isoWeek').format('YYYY-MM-DD'));
                   if (si < 0) return null;
                   const ei = periods.indexOf(dayjs(alloc.endDate).startOf('isoWeek').format('YYYY-MM-DD'));
                   if (ei < 0) return null;
-                  // Bug3 fix: dynamic centering
                   return (
                     <div
                       key={alloc.id}
@@ -585,7 +1005,7 @@ function ProjectTimelineView() {
                         left: si * CELL_W,
                         width: (ei - si + 1) * CELL_W,
                         top: li * ROW_H + (ROW_H - 24) / 2,
-                        background: proj.color
+                        background: row.proj.color
                       }}
                     >
                       {person.name} {alloc.effortPercent}%
@@ -601,6 +1021,7 @@ function ProjectTimelineView() {
   );
 }
 
+// ==================== AvailabilityView ====================
 function AvailabilityView() {
   const persons = useStore((s:any) => s.persons);
   const allocations = useStore((s:any) => s.allocations);
@@ -617,9 +1038,10 @@ function AvailabilityView() {
   );
 }
 
+// ==================== App ====================
 export default function App() {
-  const viewMode = useStore((s:any) => s.viewMode);
-  const sidebarOpen = useStore((s:any) => s.sidebarOpen);
+  const viewMode = useStore((s: any) => s.viewMode);
+  const sidebarOpen = useStore((s: any) => s.sidebarOpen);
   return (
     <div className="flex flex-col h-screen">
       <Header/>
