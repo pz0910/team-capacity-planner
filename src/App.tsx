@@ -1,12 +1,14 @@
-import { useState, useMemo, useCallback, useRef } from 'react';
+import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { create } from 'zustand';
 import dayjs from 'dayjs';
 import isoWeek from 'dayjs/plugin/isoWeek';
+import { toPng } from 'html-to-image';
 import './index.css';
 
 dayjs.extend(isoWeek);
 
 const STORAGE_KEY = 'team-capacity-planner';
+const SIDEBAR_KEY = 'team-capacity-planner-sidebar';
 
 function loadFromStorage() {
   try {
@@ -254,8 +256,14 @@ function computeLanes(allocs: any[]): { lanes: any[][]; rowH: number } {
   return { lanes, rowH: Math.max(lanes.length, 1) * ROW_H };
 }
 
+// ==================== Toast ====================
+function Toast({ message, onClose }: { message: string; onClose: () => void }) {
+  useEffect(() => { const t = setTimeout(onClose, 3000); return () => clearTimeout(t); }, [onClose]);
+  return <div className="fixed bottom-6 right-6 bg-gray-800 text-white px-4 py-2 rounded-lg shadow-lg z-50 text-sm" style={{animation:'fadeIn .3s ease-out'}}>{message}</div>;
+}
+
 // ==================== Header ====================
-function Header() {
+function Header({ onExport }: { onExport: () => void }) {
   const viewMode = useStore((s: any) => s.viewMode);
   const setViewMode = useStore((s: any) => s.setViewMode);
   const sidebarOpen = useStore((s: any) => s.sidebarOpen);
@@ -269,7 +277,165 @@ function Header() {
           <button key={k} onClick={() => setViewMode(k)} className={`px-3 py-1 text-sm rounded-md ${viewMode===k?'bg-indigo-100 text-indigo-700 font-medium':'text-gray-600 hover:bg-gray-100'}`}>{l}</button>
         ))}
       </nav>
+      <div className="flex-1"/>
+      <button onClick={onExport} className="text-sm text-gray-600 hover:text-gray-800 hover:bg-gray-100 px-3 py-1.5 rounded-md">📷 导出图片</button>
     </header>
+  );
+}
+
+// ==================== ExportModal ====================
+function ExportModal({ onClose, viewMode, onSuccess }: { onClose: () => void; viewMode: string; onSuccess: () => void }) {
+  const [rangeType, setRangeType] = useState('8w');
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
+  const [resolution, setResolution] = useState(2);
+  const [exporting, setExporting] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [onClose]);
+
+  const validate = () => {
+    if (rangeType === 'custom') {
+      if (!customStart || !customEnd) { setError('请输入开始和结束日期'); return false; }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(customStart) || !/^\d{4}-\d{2}-\d{2}$/.test(customEnd)) { setError('日期格式: YYYY-MM-DD'); return false; }
+      if (customEnd < customStart) { setError('结束日期必须 ≥ 开始日期'); return false; }
+      const weeks = dayjs(customEnd).diff(dayjs(customStart), 'week') + 1;
+      if (weeks > 52) { setError('日期范围不能超过52周'); return false; }
+    }
+    setError('');
+    return true;
+  };
+
+  const handleExport = async () => {
+    if (!validate()) return;
+    setExporting(true);
+    try {
+      const containerId = viewMode === 'person' ? 'person-timeline-scroll' : viewMode === 'project' ? 'proj-timeline-scroll' : 'avail-scroll';
+      const container = document.getElementById(containerId);
+      if (!container) { setError('未找到视图元素'); setExporting(false); return; }
+
+      const scrollH = container.scrollHeight;
+      if (scrollH < 80) { setError('当前视图为空，无法导出'); setExporting(false); return; }
+
+      const fullW = container.scrollWidth;
+      const fullH = scrollH;
+
+      const dataUrl = await toPng(container, {
+        pixelRatio: resolution,
+        backgroundColor: '#ffffff',
+        cacheBust: true,
+        style: { overflow: 'visible', width: fullW + 'px', height: fullH + 'px' },
+      });
+
+      let finalUrl = dataUrl;
+      if (rangeType !== 'all' && viewMode !== 'availability') {
+        const leftColW = viewMode === 'person' ? 128 : 192;
+        const allStart = dayjs().subtract(TIMELINE_START_WEEKS, 'week').startOf('isoWeek');
+        let startIdx: number, endIdx: number;
+        if (rangeType === 'custom') {
+          startIdx = Math.max(0, dayjs(customStart).startOf('isoWeek').diff(allStart, 'week'));
+          endIdx = startIdx + dayjs(customEnd).diff(dayjs(customStart), 'week');
+        } else {
+          const n = parseInt(rangeType);
+          startIdx = TIMELINE_START_WEEKS;
+          endIdx = startIdx + n - 1;
+        }
+        const maxIdx = TIMELINE_START_WEEKS + TIMELINE_END_WEEKS - 1;
+        startIdx = Math.max(0, startIdx);
+        endIdx = Math.min(maxIdx, endIdx);
+
+        const pr = resolution;
+        const cropW = (leftColW + (endIdx - startIdx + 1) * CELL_W) * pr;
+        const cropH = fullH * pr;
+        const offsetX = (leftColW + startIdx * CELL_W) * pr;
+
+        const img = new Image();
+        img.src = dataUrl;
+        await new Promise<void>((resolve, reject) => { img.onload = () => resolve(); img.onerror = reject; });
+
+        const canvas = document.createElement('canvas');
+        canvas.width = cropW;
+        canvas.height = cropH;
+        const ctx = canvas.getContext('2d')!;
+        ctx.drawImage(img, -offsetX, 0);
+        finalUrl = canvas.toDataURL('image/png');
+      }
+
+      const link = document.createElement('a');
+      const viewLabel = viewMode === 'person' ? '按人排期' : viewMode === 'project' ? '按项目排期' : '空闲人力';
+      link.download = `排期_${viewLabel}_${dayjs().format('YYYYMMDD')}.png`;
+      link.href = finalUrl;
+      link.click();
+      onSuccess();
+      onClose();
+    } catch (err) {
+      setError('导出失败: ' + (err as Error).message);
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  if (viewMode === 'availability') {
+    return (
+      <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50" onClick={onClose}>
+        <div className="bg-white rounded-lg shadow-xl p-5 w-80" onClick={e => e.stopPropagation()}>
+          <h2 className="text-base font-semibold mb-3">导出图片</h2>
+          <p className="text-sm text-gray-500 mb-4">将导出完整的空闲人力表格</p>
+          <label className="block text-sm text-gray-600 mb-1">分辨率</label>
+          <div className="flex gap-1 mb-4">
+            {[[2,'2x 高清'],[3,'3x 超高清']].map(([v,l]: any) => (
+              <button key={v} onClick={() => setResolution(v)} className={`px-3 py-1 text-xs rounded border ${resolution===v?'bg-indigo-100 border-indigo-300 text-indigo-700':'border-gray-200 text-gray-500 hover:bg-gray-50'}`}>{l}</button>
+            ))}
+          </div>
+          {error && <p className="text-xs text-red-500 mb-3">{error}</p>}
+          <div className="flex gap-2 justify-end">
+            <button onClick={onClose} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded">取消</button>
+            <button onClick={handleExport} disabled={exporting} className={`px-4 py-1.5 text-sm rounded ${exporting?'bg-gray-300 text-gray-500 cursor-not-allowed':'bg-indigo-600 text-white hover:bg-indigo-500'}`}>{exporting ? '导出中...' : '导出'}</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50" onClick={onClose}>
+      <div className="bg-white rounded-lg shadow-xl p-5 w-96" onClick={e => e.stopPropagation()}>
+        <h2 className="text-base font-semibold mb-4">导出图片</h2>
+        <label className="block text-sm text-gray-600 mb-1">时间范围</label>
+        <div className="flex gap-1 mb-3 flex-wrap">
+          {[['4w','4周'],['8w','8周'],['12w','12周'],['all','全部'],['custom','自定义']].map(([v,l]: any) => (
+            <button key={v} onClick={() => { setRangeType(v); setError(''); }} className={`px-2 py-1 text-xs rounded border ${rangeType===v?'bg-indigo-100 border-indigo-300 text-indigo-700':'border-gray-200 text-gray-500 hover:bg-gray-50'}`}>{l}</button>
+          ))}
+        </div>
+        {rangeType === 'custom' && (
+          <div className="flex gap-2 mb-3">
+            <div className="flex-1">
+              <label className="block text-xs text-gray-500 mb-1">开始日期</label>
+              <input type="text" value={customStart} onChange={e => { setCustomStart(e.target.value); setError(''); }} placeholder="YYYY-MM-DD" className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"/>
+            </div>
+            <div className="flex-1">
+              <label className="block text-xs text-gray-500 mb-1">结束日期</label>
+              <input type="text" value={customEnd} onChange={e => { setCustomEnd(e.target.value); setError(''); }} placeholder="YYYY-MM-DD" className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"/>
+            </div>
+          </div>
+        )}
+        <label className="block text-sm text-gray-600 mb-1">分辨率</label>
+        <div className="flex gap-1 mb-4">
+          {[[2,'2x 高清'],[3,'3x 超高清']].map(([v,l]: any) => (
+            <button key={v} onClick={() => setResolution(v)} className={`px-3 py-1 text-xs rounded border ${resolution===v?'bg-indigo-100 border-indigo-300 text-indigo-700':'border-gray-200 text-gray-500 hover:bg-gray-50'}`}>{l}</button>
+          ))}
+        </div>
+        {error && <p className="text-xs text-red-500 mb-3">{error}</p>}
+        <div className="flex gap-2 justify-end">
+          <button onClick={onClose} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded">取消</button>
+          <button onClick={handleExport} disabled={exporting} className={`px-4 py-1.5 text-sm rounded ${exporting?'bg-gray-300 text-gray-500 cursor-not-allowed':'bg-indigo-600 text-white hover:bg-indigo-500'}`}>{exporting ? '导出中...' : '导出'}</button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -297,6 +463,22 @@ function Sidebar() {
   const [reqName, setReqName] = useState('');
   const [expandedReqId, setExpandedReqId] = useState<string | null>(null);
   const [phaseName, setPhaseName] = useState('');
+  const [search, setSearch] = useState('');
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
+    try { const r = localStorage.getItem(SIDEBAR_KEY); if (r) return JSON.parse(r); } catch {}
+    return { persons: false, projects: false, requirements: false, data: false };
+  });
+
+  const toggleSection = (key: string) => {
+    const next = { ...collapsed, [key]: !collapsed[key] };
+    setCollapsed(next);
+    try { localStorage.setItem(SIDEBAR_KEY, JSON.stringify(next)); } catch {}
+  };
+
+  const sq = search.toLowerCase();
+  const fPersons = sq ? persons.filter((p: any) => p.name.toLowerCase().includes(sq)) : persons;
+  const fProjects = sq ? projects.filter((p: any) => p.name.toLowerCase().includes(sq)) : projects;
+  const fRequirements = sq ? requirements.filter((r: any) => r.name.toLowerCase().includes(sq)) : requirements;
 
   const handleExport = () => {
     const data = exportData();
@@ -338,103 +520,129 @@ function Sidebar() {
     setPhaseName('');
   };
 
-  // 按项目分组需求
   const reqsByProject = useMemo(() => {
     const m = new Map<string, any[]>();
-    for (const r of requirements) {
+    for (const r of fRequirements) {
       if (!m.has(r.projectId)) m.set(r.projectId, []);
       m.get(r.projectId)!.push(r);
     }
     return m;
-  }, [requirements]);
+  }, [fRequirements]);
 
   return (
     <aside className="w-64 bg-gray-800 text-gray-100 p-4 overflow-y-auto shrink-0">
+      {/* 搜索框 */}
+      <div className="mb-4">
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="🔍 搜索人员/项目..." className="w-full bg-gray-700 text-white text-sm px-3 py-1.5 rounded border-0 outline-none placeholder-gray-400"/>
+      </div>
+
       {/* 人员 */}
       <section className="mb-6">
-        <h3 className="text-xs font-semibold text-gray-400 uppercase mb-2">人员</h3>
-        <div className="flex gap-1 mb-2">
-          <input value={np} onChange={e=>setNp(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&np.trim()){addPerson(np.trim());setNp('');}}} placeholder="输入姓名" className="flex-1 bg-gray-700 text-white text-sm px-2 py-1 rounded border-0 outline-none"/>
-          <button onClick={()=>{if(np.trim()){addPerson(np.trim());setNp('');}}} className="bg-indigo-600 text-white text-sm px-2 py-1 rounded">+</button>
-        </div>
-        <ul className="space-y-1">{persons.map((p:any)=><li key={p.id} className="flex items-center gap-2 group"><span className="w-3 h-3 rounded-full" style={{background:p.color}}/><span className="text-sm flex-1">{p.name}</span><button onClick={()=>deletePerson(p.id)} className="text-gray-500 hover:text-red-400 text-xs opacity-0 group-hover:opacity-100">✕</button></li>)}</ul>
+        <h3 className="text-xs font-semibold text-gray-400 uppercase mb-2 cursor-pointer hover:text-gray-300 flex items-center gap-1 select-none" onClick={() => toggleSection('persons')}>
+          <span className="text-[10px] w-3">{collapsed.persons ? '▸' : '▾'}</span>人员<span className="text-gray-500 ml-auto text-[10px]">{fPersons.length}</span>
+        </h3>
+        {!collapsed.persons && (
+          <>
+            <div className="flex gap-1 mb-2">
+              <input value={np} onChange={e=>setNp(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&np.trim()){addPerson(np.trim());setNp('');}}} placeholder="输入姓名" className="flex-1 bg-gray-700 text-white text-sm px-2 py-1 rounded border-0 outline-none"/>
+              <button onClick={()=>{if(np.trim()){addPerson(np.trim());setNp('');}}} className="bg-indigo-600 text-white text-sm px-2 py-1 rounded">+</button>
+            </div>
+            <ul className="space-y-1">{fPersons.map((p:any)=><li key={p.id} className="flex items-center gap-2 group"><span className="w-3 h-3 rounded-full" style={{background:p.color}}/><span className="text-sm flex-1">{p.name}</span><button onClick={()=>deletePerson(p.id)} className="text-gray-500 hover:text-red-400 text-xs opacity-0 group-hover:opacity-100">✕</button></li>)}</ul>
+            {search && fPersons.length === 0 && <p className="text-xs text-gray-500">无匹配</p>}
+          </>
+        )}
       </section>
 
       {/* 项目 */}
       <section className="mb-6">
-        <h3 className="text-xs font-semibold text-gray-400 uppercase mb-2">项目</h3>
-        <div className="flex gap-1 mb-2">
-          <input value={npr} onChange={e=>setNpr(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&npr.trim()){addProject(npr.trim());setNpr('');}}} placeholder="项目名称" className="flex-1 bg-gray-700 text-white text-sm px-2 py-1 rounded border-0 outline-none"/>
-          <button onClick={()=>{if(npr.trim()){addProject(npr.trim());setNpr('');}}} className="bg-indigo-600 text-white text-sm px-2 py-1 rounded">+</button>
-        </div>
-        <ul className="space-y-1">{projects.map((p:any)=><li key={p.id} className="flex items-center gap-2 group"><span className="w-3 h-3 rounded-sm" style={{background:p.color}}/><span className="text-sm flex-1">{p.name}</span><button onClick={()=>deleteProject(p.id)} className="text-gray-500 hover:text-red-400 text-xs opacity-0 group-hover:opacity-100">✕</button></li>)}</ul>
+        <h3 className="text-xs font-semibold text-gray-400 uppercase mb-2 cursor-pointer hover:text-gray-300 flex items-center gap-1 select-none" onClick={() => toggleSection('projects')}>
+          <span className="text-[10px] w-3">{collapsed.projects ? '▸' : '▾'}</span>项目<span className="text-gray-500 ml-auto text-[10px]">{fProjects.length}</span>
+        </h3>
+        {!collapsed.projects && (
+          <>
+            <div className="flex gap-1 mb-2">
+              <input value={npr} onChange={e=>setNpr(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&npr.trim()){addProject(npr.trim());setNpr('');}}} placeholder="项目名称" className="flex-1 bg-gray-700 text-white text-sm px-2 py-1 rounded border-0 outline-none"/>
+              <button onClick={()=>{if(npr.trim()){addProject(npr.trim());setNpr('');}}} className="bg-indigo-600 text-white text-sm px-2 py-1 rounded">+</button>
+            </div>
+            <ul className="space-y-1">{fProjects.map((p:any)=><li key={p.id} className="flex items-center gap-2 group"><span className="w-3 h-3 rounded-sm" style={{background:p.color}}/><span className="text-sm flex-1">{p.name}</span><button onClick={()=>deleteProject(p.id)} className="text-gray-500 hover:text-red-400 text-xs opacity-0 group-hover:opacity-100">✕</button></li>)}</ul>
+            {search && fProjects.length === 0 && <p className="text-xs text-gray-500">无匹配</p>}
+          </>
+        )}
       </section>
 
       {/* 需求/阶段管理 */}
       <section className="mb-6">
-        <h3 className="text-xs font-semibold text-gray-400 uppercase mb-2">需求</h3>
-        <div className="flex gap-1 mb-2">
-          <select value={reqProjectId} onChange={e=>setReqProjectId(e.target.value)} className="flex-1 bg-gray-700 text-white text-sm px-2 py-1 rounded border-0 outline-none">
-            <option value="">选择项目</option>
-            {projects.map((p:any)=><option key={p.id} value={p.id}>{p.name}</option>)}
-          </select>
-        </div>
-        <div className="flex gap-1 mb-2">
-          <input value={reqName} onChange={e=>setReqName(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')handleAddReq();}} placeholder="需求名称" className="flex-1 bg-gray-700 text-white text-sm px-2 py-1 rounded border-0 outline-none"/>
-          <button onClick={handleAddReq} className="bg-indigo-600 text-white text-sm px-2 py-1 rounded">+</button>
-        </div>
-        {/* 需求列表（按项目分组） */}
-        <div className="space-y-1">
-          {projects.map((proj: any) => {
-            const reqs = reqsByProject.get(proj.id) || [];
-            if (reqs.length === 0) return null;
-            return (
-              <div key={proj.id}>
-                {reqs.map((req: any) => {
-                  const reqPhases = phases.filter((p: any) => p.requirementId === req.id);
-                  const expanded = expandedReqId === req.id;
-                  return (
-                    <div key={req.id} className="mb-1">
-                      <div className="flex items-center gap-1 group cursor-pointer hover:bg-gray-700 rounded px-1 py-0.5" onClick={() => setExpandedReqId(expanded ? null : req.id)}>
-                        <span className="text-xs text-gray-500">{expanded ? '▾' : '▸'}</span>
-                        <span className="text-xs text-gray-400">{proj.name}</span>
-                        <span className="text-xs text-gray-400">/</span>
-                        <span className="text-sm flex-1">{req.name}</span>
-                        <button onClick={(e) => { e.stopPropagation(); deleteRequirement(req.id); }} className="text-gray-500 hover:text-red-400 text-xs opacity-0 group-hover:opacity-100">✕</button>
-                      </div>
-                      {expanded && (
-                        <div className="ml-4 space-y-0.5">
-                          {reqPhases.map((ph: any) => (
-                            <div key={ph.id} className="flex items-center gap-2 group hover:bg-gray-700 rounded px-1 py-0.5">
-                              <span className="text-xs text-gray-500">├─</span>
-                              <span className="text-sm flex-1">{ph.name}</span>
-                              <button onClick={() => deletePhase(ph.id)} className="text-gray-500 hover:text-red-400 text-xs opacity-0 group-hover:opacity-100">✕</button>
-                            </div>
-                          ))}
-                          <div className="flex gap-1 mt-1">
-                            <input value={expandedReqId === req.id ? phaseName : ''} onChange={e=>setPhaseName(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')handleAddPhase(req.id);}} placeholder="阶段名称" className="flex-1 bg-gray-700 text-white text-xs px-2 py-1 rounded border-0 outline-none" onClick={e=>e.stopPropagation()}/>
-                            <button onClick={()=>handleAddPhase(req.id)} className="bg-gray-600 text-white text-xs px-2 py-1 rounded">+</button>
+        <h3 className="text-xs font-semibold text-gray-400 uppercase mb-2 cursor-pointer hover:text-gray-300 flex items-center gap-1 select-none" onClick={() => toggleSection('requirements')}>
+          <span className="text-[10px] w-3">{collapsed.requirements ? '▸' : '▾'}</span>需求<span className="text-gray-500 ml-auto text-[10px]">{fRequirements.length}</span>
+        </h3>
+        {!collapsed.requirements && (
+          <>
+            <div className="flex gap-1 mb-2">
+              <select value={reqProjectId} onChange={e=>setReqProjectId(e.target.value)} className="flex-1 bg-gray-700 text-white text-sm px-2 py-1 rounded border-0 outline-none">
+                <option value="">选择项目</option>
+                {projects.map((p:any)=><option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </div>
+            <div className="flex gap-1 mb-2">
+              <input value={reqName} onChange={e=>setReqName(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')handleAddReq();}} placeholder="需求名称" className="flex-1 bg-gray-700 text-white text-sm px-2 py-1 rounded border-0 outline-none"/>
+              <button onClick={handleAddReq} className="bg-indigo-600 text-white text-sm px-2 py-1 rounded">+</button>
+            </div>
+            <div className="space-y-1">
+              {projects.map((proj: any) => {
+                const reqs = reqsByProject.get(proj.id) || [];
+                if (reqs.length === 0) return null;
+                return (
+                  <div key={proj.id}>
+                    {reqs.map((req: any) => {
+                      const reqPhases = phases.filter((p: any) => p.requirementId === req.id);
+                      const expanded = expandedReqId === req.id;
+                      return (
+                        <div key={req.id} className="mb-1">
+                          <div className="flex items-center gap-1 group cursor-pointer hover:bg-gray-700 rounded px-1 py-0.5" onClick={() => setExpandedReqId(expanded ? null : req.id)}>
+                            <span className="text-xs text-gray-500">{expanded ? '▾' : '▸'}</span>
+                            <span className="text-xs text-gray-400">{proj.name}</span><span className="text-xs text-gray-400">/</span>
+                            <span className="text-sm flex-1">{req.name}</span>
+                            <button onClick={(e) => { e.stopPropagation(); deleteRequirement(req.id); }} className="text-gray-500 hover:text-red-400 text-xs opacity-0 group-hover:opacity-100">✕</button>
                           </div>
+                          {expanded && (
+                            <div className="ml-4 space-y-0.5">
+                              {reqPhases.map((ph: any) => (
+                                <div key={ph.id} className="flex items-center gap-2 group hover:bg-gray-700 rounded px-1 py-0.5">
+                                  <span className="text-xs text-gray-500">├─</span>
+                                  <span className="text-sm flex-1">{ph.name}</span>
+                                  <button onClick={() => deletePhase(ph.id)} className="text-gray-500 hover:text-red-400 text-xs opacity-0 group-hover:opacity-100">✕</button>
+                                </div>
+                              ))}
+                              <div className="flex gap-1 mt-1">
+                                <input value={expandedReqId === req.id ? phaseName : ''} onChange={e=>setPhaseName(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')handleAddPhase(req.id);}} placeholder="阶段名称" className="flex-1 bg-gray-700 text-white text-xs px-2 py-1 rounded border-0 outline-none" onClick={e=>e.stopPropagation()}/>
+                                <button onClick={()=>handleAddPhase(req.id)} className="bg-gray-600 text-white text-xs px-2 py-1 rounded">+</button>
+                              </div>
+                            </div>
+                          )}
                         </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            );
-          })}
-          {requirements.length === 0 && <p className="text-xs text-gray-500">暂无需求，请先添加</p>}
-        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+              {fRequirements.length === 0 && <p className="text-xs text-gray-500">{search ? '无匹配' : '暂无需求，请先添加'}</p>}
+            </div>
+          </>
+        )}
       </section>
 
       {/* 数据 */}
       <section>
-        <h3 className="text-xs font-semibold text-gray-400 uppercase mb-2">数据</h3>
-        <div className="flex flex-col gap-2">
-          <button onClick={handleExport} className="w-full text-left text-sm text-gray-300 hover:text-white hover:bg-gray-700 px-2 py-1.5 rounded">📤 导出 JSON</button>
-          <button onClick={handleImport} className="w-full text-left text-sm text-gray-300 hover:text-white hover:bg-gray-700 px-2 py-1.5 rounded">📥 导入 JSON</button>
-          <button onClick={()=>{if(confirm('确定清空所有数据？'))clearAll();}} className="w-full text-left text-sm text-red-400 hover:text-red-300 hover:bg-gray-700 px-2 py-1.5 rounded">🗑️ 清空数据</button>
-        </div>
+        <h3 className="text-xs font-semibold text-gray-400 uppercase mb-2 cursor-pointer hover:text-gray-300 flex items-center gap-1 select-none" onClick={() => toggleSection('data')}>
+          <span className="text-[10px] w-3">{collapsed.data ? '▸' : '▾'}</span>数据
+        </h3>
+        {!collapsed.data && (
+          <div className="flex flex-col gap-2">
+            <button onClick={handleExport} className="w-full text-left text-sm text-gray-300 hover:text-white hover:bg-gray-700 px-2 py-1.5 rounded">📤 导出 JSON</button>
+            <button onClick={handleImport} className="w-full text-left text-sm text-gray-300 hover:text-white hover:bg-gray-700 px-2 py-1.5 rounded">📥 导入 JSON</button>
+            <button onClick={()=>{if(confirm('确定清空所有数据？'))clearAll();}} className="w-full text-left text-sm text-red-400 hover:text-red-300 hover:bg-gray-700 px-2 py-1.5 rounded">🗑️ 清空数据</button>
+          </div>
+        )}
       </section>
     </aside>
   );
@@ -504,7 +712,7 @@ function TimelineView() {
   };
 
   return (
-    <div className="h-full overflow-auto" id="person-timeline-scroll">
+    <div className="flex-1 min-h-0 overflow-auto" id="person-timeline-scroll">
       <div style={{ minWidth: 128 + periods.length * CELL_W }}>
         {/* Sticky header row */}
         <div className="flex sticky top-0 z-20 bg-white border-b border-gray-200">
@@ -885,54 +1093,34 @@ function ProjectTimelineView() {
   const periods = useMemo(() => generateWeeks(startDate, TIMELINE_START_WEEKS + TIMELINE_END_WEEKS), [startDate]);
   const today = dayjs().format('YYYY-MM-DD');
 
-  // 按 phaseId 分组 allocations
-  const phaseAllocMap = useMemo(() => {
-    const m = new Map<string, any[]>();
-    for (const a of allocations) {
-      if (!m.has(a.phaseId)) m.set(a.phaseId, []);
-      m.get(a.phaseId)!.push(a);
-    }
-    return m;
-  }, [allocations]);
-
-  // 构建行列表：需求作为分组标题，阶段作为数据行
-  const { rowList, timelineLanes } = useMemo(() => {
-    type RowItem = { type: 'req_header'; key: string; proj: any; req: any } | { type: 'phase'; key: string; proj: any; req: any; phase: any };
+  // 按需求分组：每需求一行，合并该需求下所有阶段的 allocations
+  const { rowList, rowLanes } = useMemo(() => {
+    type RowItem = { key: string; proj: any; req: any };
     const rows: RowItem[] = [];
-    const tLanes = new Map<string, { lanes: any[][]; rowH: number }>();
+    const lanes = new Map<string, { lanes: any[][]; rowH: number }>();
 
     for (const proj of projects) {
       const projReqs = requirements.filter((r: any) => r.projectId === proj.id);
       if (projReqs.length === 0) {
-        // 项目无需求，显示空行
-        rows.push({ type: 'req_header', key: proj.id + '__empty', proj, req: null });
+        rows.push({ key: proj.id + '__empty', proj, req: null });
       } else {
         for (const req of projReqs) {
-          // 需求标题行
-          rows.push({ type: 'req_header', key: 'req_' + req.id, proj, req });
-          // 阶段行
+          rows.push({ key: 'req_' + req.id, proj, req });
+          // 合并该需求下所有阶段的 allocations
           const reqPhases = phases.filter((p: any) => p.requirementId === req.id);
-          if (reqPhases.length === 0) {
-            // 需求无阶段，显示空行
-            rows.push({ type: 'phase', key: 'phase_empty_' + req.id, proj, req, phase: null });
-          } else {
-            for (const phase of reqPhases) {
-              const allocs = phaseAllocMap.get(phase.id) || [];
-              const laneKey = 'phase_' + phase.id;
-              rows.push({ type: 'phase', key: laneKey, proj, req, phase });
-              if (allocs.length > 0) {
-                tLanes.set(laneKey, computeLanes(allocs));
-              }
-            }
+          const reqPhaseIds = reqPhases.map((p: any) => p.id);
+          const reqAllocs = allocations.filter((a: any) => reqPhaseIds.includes(a.phaseId));
+          if (reqAllocs.length > 0) {
+            lanes.set('req_' + req.id, computeLanes(reqAllocs));
           }
         }
       }
     }
-    return { rowList: rows, timelineLanes: tLanes };
-  }, [projects, requirements, phases, phaseAllocMap]);
+    return { rowList: rows, rowLanes: lanes };
+  }, [projects, requirements, phases, allocations]);
 
   return (
-    <div className="h-full overflow-auto" id="proj-timeline-scroll">
+    <div className="flex-1 min-h-0 overflow-auto" id="proj-timeline-scroll">
       <div style={{ minWidth: 192 + periods.length * CELL_W }}>
         {/* Sticky header row */}
         <div className="flex sticky top-0 z-20 bg-white border-b border-gray-200">
@@ -943,52 +1131,30 @@ function ProjectTimelineView() {
             </div>
           ))}
         </div>
-        {/* Body rows */}
+        {/* Body rows - 每需求一行 */}
         {rowList.map((row) => {
-          const isReqHeader = row.type === 'req_header';
-          const isEmpty = row.key.endsWith('__empty') || row.key.startsWith('phase_empty_');
-          const rowH = isReqHeader ? ROW_H : (isEmpty ? ROW_H : (timelineLanes.get(row.key)?.rowH || ROW_H));
-          const lanes = isReqHeader ? [] : (isEmpty ? [] : (timelineLanes.get(row.key)?.lanes || []));
+          const isEmpty = row.key.endsWith('__empty');
+          const rowH = isEmpty ? ROW_H : (rowLanes.get(row.key)?.rowH || ROW_H);
+          const laneData = isEmpty ? [] : (rowLanes.get(row.key)?.lanes || []);
 
           return (
-            <div key={row.key} className={`flex border-b border-gray-200 ${isReqHeader ? 'bg-gray-50' : ''}`}>
-              {/* Sticky left column */}
+            <div key={row.key} className="flex border-b border-gray-200">
               <div className="w-48 shrink-0 sticky left-0 z-10 bg-white border-r border-gray-200 px-3 flex items-center gap-2" style={{ height: rowH }}>
-                {isReqHeader ? (
-                  <>
-                    <span className="w-2 h-2 rounded-sm" style={{ background: row.proj.color }} />
-                    <div className="truncate">
-                      <span className="text-xs text-gray-400">{row.proj.name}</span>
-                      {row.req ? (
-                        <span className="text-sm font-medium ml-1">{row.req.name}</span>
-                      ) : (
-                        <span className="text-xs text-gray-400 ml-1">无需求</span>
-                      )}
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <span className="text-gray-400 text-xs">└</span>
-                    {row.phase ? (
-                      <span className="text-sm">{row.phase.name}</span>
-                    ) : (
-                      <span className="text-xs text-gray-400">无阶段</span>
-                    )}
-                  </>
-                )}
+                <span className="w-2 h-2 rounded-sm" style={{ background: row.proj.color }} />
+                <div className="truncate">
+                  <span className="text-xs text-gray-400">{row.proj.name}</span>
+                  {row.req ? (
+                    <span className="text-sm font-medium ml-1">{row.req.name}</span>
+                  ) : (
+                    <span className="text-xs text-gray-400 ml-1">无需求</span>
+                  )}
+                </div>
               </div>
-              {/* Timeline cells + allocations */}
               <div className="flex-1 relative" style={{ height: rowH, minWidth: periods.length * CELL_W }}>
-                {/* Background cells */}
                 {periods.map((week, wi) => (
-                  <div
-                    key={week}
-                    className={week===today?'bg-indigo-50':''}
-                    style={{ position: 'absolute', left: wi * CELL_W, width: CELL_W, height: rowH }}
-                  />
+                  <div key={week} className={week===today?'bg-indigo-50':''} style={{ position: 'absolute', left: wi * CELL_W, width: CELL_W, height: rowH }} />
                 ))}
-                {/* Allocation bars */}
-                {!isReqHeader && row.phase && lanes.map((lane, li) => lane.map((alloc: any) => {
+                {!isEmpty && laneData.map((lane, li) => lane.map((alloc: any) => {
                   const person = persons.find((p: any) => p.id === alloc.personId);
                   if (!person) return null;
                   const si = periods.indexOf(dayjs(alloc.startDate).startOf('isoWeek').format('YYYY-MM-DD'));
@@ -999,12 +1165,7 @@ function ProjectTimelineView() {
                     <div
                       key={alloc.id}
                       className="absolute h-6 rounded cursor-pointer flex items-center px-1.5 text-white text-xs truncate hover:shadow-lg"
-                      style={{
-                        left: si * CELL_W,
-                        width: (ei - si + 1) * CELL_W,
-                        top: li * ROW_H + (ROW_H - 24) / 2,
-                        background: row.proj.color
-                      }}
+                      style={{ left: si * CELL_W, width: (ei - si + 1) * CELL_W, top: li * ROW_H + (ROW_H - 24) / 2, background: row.proj.color }}
                     >
                       {person.name} {alloc.effortPercent}%
                     </div>
@@ -1027,10 +1188,10 @@ function AvailabilityView() {
   const getLoad = (pid:string, ws:string) => { const we = dayjs(ws).endOf('isoWeek').format('YYYY-MM-DD'); return allocations.filter((a:any) => a.personId===pid && a.startDate<=we && a.endDate>=ws).reduce((s:number,a:any) => s+a.effortPercent, 0); };
   const getColor = (l:number) => l===0?'#ECFDF5':l<=50?'#DBEAFE':l<=80?'#FEF3C7':l<=100?'#FED7AA':'#FEE2E2';
   return (
-    <div className="p-6">
+    <div className="flex-1 min-h-0 overflow-auto p-6" id="avail-scroll">
       <h2 className="text-lg font-semibold mb-2">空闲人力视图</h2>
       <p className="text-sm text-gray-500 mb-4">绿色=空闲，红色=超载</p>
-      <div className="overflow-x-auto"><table className="border-collapse"><thead><tr><th className="text-left text-sm font-medium text-gray-600 px-3 py-2 border-b border-gray-200 w-24">人员</th>{weeks.map(w=><th key={w} className="text-center text-xs text-gray-500 px-2 py-2 border-b border-gray-200" style={{minWidth:64}}>{dayjs(w).format('M/D')}</th>)}</tr></thead><tbody>{persons.map((p:any)=><tr key={p.id} className="hover:bg-gray-50"><td className="px-3 py-2 border-b border-gray-200"><div className="flex items-center gap-2"><span className="w-2 h-2 rounded-full" style={{background:p.color}}/><span className="text-sm">{p.name}</span></div></td>{weeks.map(w=>{const l=getLoad(p.id,w);return <td key={w} className="text-center text-xs px-2 py-2 border-b border-gray-200 font-medium" style={{background:getColor(l)}}>{l>0?l+'%':'空'}</td>;})}</tr>)}</tbody></table></div>
+      <div className="overflow-x-auto"><table className="border-collapse"><thead><tr><th className="text-left text-sm font-medium text-gray-600 px-3 py-2 border-b border-gray-200 w-24 sticky left-0 z-10 bg-white" style={{boxShadow:'2px 0 4px -2px rgba(0,0,0,0.1)'}}>人员</th>{weeks.map(w=><th key={w} className="text-center text-xs text-gray-500 px-2 py-2 border-b border-gray-200" style={{minWidth:64}}>{dayjs(w).format('M/D')}</th>)}</tr></thead><tbody>{persons.map((p:any)=><tr key={p.id} className="hover:bg-gray-50"><td className="px-3 py-2 border-b border-gray-200 sticky left-0 z-10 bg-white" style={{boxShadow:'2px 0 4px -2px rgba(0,0,0,0.1)'}}><div className="flex items-center gap-2"><span className="w-2 h-2 rounded-full" style={{background:p.color}}/><span className="text-sm">{p.name}</span></div></td>{weeks.map(w=>{const l=getLoad(p.id,w);return <td key={w} className="text-center text-xs px-2 py-2 border-b border-gray-200 font-medium" style={{background:getColor(l)}}>{l>0?l+'%':'空'}</td>;})}</tr>)}</tbody></table></div>
       <div className="flex gap-4 mt-4 text-xs text-gray-500">{[ ['空闲','#ECFDF5'],['≤50%','#DBEAFE'],['≤80%','#FEF3C7'],['≤100%','#FED7AA'],['超载','#FEE2E2'] ].map(([l,c]:any)=><span key={l} className="flex items-center gap-1"><span className="w-3 h-3 rounded" style={{background:c}}/> {l}</span>)}</div>
     </div>
   );
@@ -1040,13 +1201,19 @@ function AvailabilityView() {
 export default function App() {
   const viewMode = useStore((s: any) => s.viewMode);
   const sidebarOpen = useStore((s: any) => s.sidebarOpen);
+  const [exportModal, setExportModal] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
   return (
     <div className="flex flex-col h-screen">
-      <Header/>
+      <Header onExport={() => setExportModal(true)}/>
       <div className="flex flex-1 overflow-hidden">
         {sidebarOpen && <Sidebar/>}
-        <main className="flex-1 overflow-auto">{viewMode==='person'?<TimelineView/>:viewMode==='project'?<ProjectTimelineView/>:<AvailabilityView/>}</main>
+        <main className="flex-1 overflow-hidden flex flex-col">
+          {viewMode==='person'?<TimelineView/>:viewMode==='project'?<ProjectTimelineView/>:<AvailabilityView/>}
+        </main>
       </div>
+      {exportModal && <ExportModal onClose={() => setExportModal(false)} viewMode={viewMode} onSuccess={() => setToast('📷 图片已保存')}/>}
+      {toast && <Toast message={toast} onClose={() => setToast(null)}/>}
     </div>
   );
 }

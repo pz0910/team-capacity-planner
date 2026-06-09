@@ -83,3 +83,9 @@ body {
   background: #DBEAFE;
   outline: 2px dashed #3B82F6;
 }
+
+/* Toast 动画 */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
