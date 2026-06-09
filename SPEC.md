@@ -1,213 +1,230 @@
-# SPEC: 阶段分类功能
+# SPEC: 导出图片功能
 
-> team-capacity-planner 新增「阶段」子分类
-> 版本: 1.0 | 日期: 2026-06-08
+> team-capacity-planner | 版本: 2.0 | 日期: 2026-06-09
+> 基于现有实现的修订版，修复已知问题并明确规格
 
 ---
 
-## 1. 背景
+## 1. 功能概述
 
-当前 Allocation 直接用 `requirementName` 字符串标识需求，没有独立的「需求」实体，也没有「阶段」概念。一个需求的实际工作通常分为多个阶段（设计→开发→测试→联调），需要在排期中体现。
+将当前视图的甘特图/表格内容导出为 PNG 图片，支持三种视图：
+- **按人排期** (`person`)
+- **按项目排期** (`project`)
+- **空闲人力** (`availability`)
 
-## 2. 数据模型变更
+## 2. 技术方案
 
-### 2.1 新增实体
-
-```typescript
-/** 需求（独立实体） */
-interface Requirement {
-  id: string;           // UUID
-  projectId: string;    // 所属项目
-  name: string;         // 需求名称
-  createdAt: Date;
-}
-
-/** 阶段 */
-interface Phase {
-  id: string;           // UUID
-  requirementId: string; // 所属需求
-  name: string;         // 阶段名称，如 '设计'、'开发'、'测试'、'联调'
-  createdAt: Date;
-}
-```
-
-### 2.2 Allocation 变更
-
-```typescript
-interface Allocation {
-  id: string;
-  personId: string;
-  phaseId: string;          // 新增：引用阶段（替代 requirementName）
-  startDate: string;        // YYYY-MM-DD
-  endDate: string;          // YYYY-MM-DD
-  effortPercent: number;    // 0-200
-  note?: string;
-  createdAt: Date;
-}
-```
-
-### 2.3 Zustand Store 变更
-
-```typescript
-// 新增状态
-requirements: Requirement[];
-phases: Phase[];
-
-// 新增 actions
-addRequirement(projectId, name) → Requirement
-deleteRequirement(id)           // 级联删除 phases + allocations
-updateRequirement(id, data)
-
-addPhase(requirementId, name) → Phase
-deletePhase(id)                 // 级联删除 allocations
-updatePhase(id, data)
-```
-
-### 2.4 localStorage 结构
+### 2.1 核心依赖
 
 ```json
 {
-  "persons": [...],
-  "projects": [...],
-  "requirements": [...],
-  "phases": [...],
-  "allocations": [...]
+  "html-to-image": "^1.11.0"
 }
 ```
 
-### 2.5 数据迁移
+**必须在 `package.json` 的 `dependencies` 中声明**，不能仅靠 import。
 
-旧数据（只有 `requirementName` 没有 `phaseId`）自动迁移：
-- 为每个唯一的 `projectId + requirementName` 创建 Requirement
-- 为每个 Requirement 创建一个默认 Phase（名称 = requirementName）
-- 将 Allocation 的 `requirementName` 替换为对应的 `phaseId`
-
-## 3. UI 交互设计
-
-### 3.1 侧边栏：需求/阶段管理
-
-在「项目」区域下方新增「需求」管理区：
+### 2.2 导出流程
 
 ```
-┌─────────────────────────┐
-│ 需求                     │
-│ [项目▼] [需求名称    ] [+] │
-│                         │
-│ ▸ 项目A / 需求1          │
-│   ├─ 设计               │
-│   ├─ 开发               │
-│   └─ 测试               │
-│ ▸ 项目A / 需求2          │
-│   └─ 开发               │
-│ ▸ 项目B / 需求3          │
-│   ├─ 设计               │
-│   └─ 联调               │
-└─────────────────────────┘
+用户点击「导出图片」
+    │
+    ▼
+弹出 ExportModal
+    │
+    ├── 空闲人力视图：仅显示分辨率选择
+    └── 时间轴视图：显示时间范围 + 分辨率选择
+    │
+    ▼
+用户确认导出
+    │
+    ▼
+定位目标容器 DOM
+    │
+    ├── person  → #person-timeline-scroll
+    ├── project → #proj-timeline-scroll
+    └── avail   → #avail-scroll
+    │
+    ▼
+toPng() 捕获完整内容（overflow: visible）
+    │
+    ▼
+[仅时间轴视图 + 非全部范围] Canvas 裁剪
+    │
+    ▼
+触发下载 → 文件名格式: 排期_{视图标签}_{日期}.png
 ```
 
-交互：
-- 选择项目 → 输入需求名称 → 回车添加需求
-- 点击需求展开 → 输入阶段名称 → 回车添加阶段
-- 需求/阶段支持删除（级联删除下级 + 关联 allocations）
-- 需求/阶段支持重命名
+### 2.3 时间范围
 
-### 3.2 排期弹窗：选择阶段
+| 范围 | 说明 | 时间轴视图 | 空闲人力视图 |
+|------|------|-----------|-------------|
+| 4周 | 最近4周 | ✅ 裁剪 | ❌ 隐藏选项 |
+| 8周 | 最近8周 | ✅ 裁剪 | ❌ 隐藏选项 |
+| 12周 | 最近12周 | ✅ 裁剪 | ❌ 隐藏选项 |
+| 全部 | 所有可见周 | ✅ 不裁剪 | ✅ 默认 |
+| 自定义 | 用户指定日期范围 | ✅ 裁剪 | ❌ 隐藏选项 |
 
-新建排期弹窗改为：
+> **空闲人力视图**不支持时间范围选择，始终导出完整表格。
 
-```
-┌──────────────────────────┐
-│ 新建排期                  │
-│                          │
-│ 项目:    [选择项目    ▼]  │
-│ 需求:    [选择需求    ▼]  │  ← 依赖项目选择
-│ 阶段:    [选择阶段    ▼]  │  ← 依赖需求选择
-│ 时长:    [1周] [2周] ...  │
-│ 开始:    [YYYY-MM-DD]    │  ← 默认 = 当天所在周
-│ 结束:    [YYYY-MM-DD]    │
-│ 投入:    [====●====] 100% │
-│                          │
-│         [取消] [保存]     │
-└──────────────────────────┘
-```
+### 2.4 分辨率
 
-**级联选择逻辑：**
-1. 选择项目 → 需求下拉过滤为该项目的需求
-2. 选择需求 → 阶段下拉过滤为该需求的阶段
-3. 如果项目下无需求，提示「请先在侧边栏添加需求」
+| 选项 | pixelRatio | 用途 |
+|------|-----------|------|
+| 2x 高清 | 2 | 屏幕分享、文档 |
+| 3x 超高清 | 3 | 打印、大屏展示 |
 
-### 3.3 色块显示：需求+阶段
+默认选中 2x。
 
-甘特图色块文字改为：
+### 2.5 裁剪逻辑（时间轴视图）
 
-```
-当前: [项目名 需求名 100%]
-改为: [需求名/阶段名 100%]
+```typescript
+// 左侧列宽
+const leftColW = viewMode === 'person' ? 128 : 192;
+
+// 计算裁剪区域
+const startIdx = ...; // 起始周索引
+const endIdx = ...;   // 结束周索引
+const cropW = (leftColW + (endIdx - startIdx + 1) * CELL_W) * resolution;
+const cropH = fullHeight * resolution;
+const offsetX = (leftColW + startIdx * CELL_W) * resolution;
+
+// Canvas 裁剪：保留左侧列 + 指定周范围
+ctx.drawImage(img, -offsetX, 0);
 ```
 
-即色块显示 `需求名/阶段名 投入%`，项目名通过颜色区分。
+**关键常量：**
+- `CELL_W = 80`（每列宽度）
+- `TIMELINE_START_WEEKS = 26`（历史周数）
+- `TIMELINE_END_WEEKS = 52`（未来周数）
 
-### 3.4 按项目排期视图
+## 3. 三个视图的 DOM 结构
 
-行标题从 `项目/需求` 改为 `项目/需求/阶段`：
+### 3.1 按人排期视图
 
 ```
-当前:
-  项目A / 需求1     ████░░░░
-                    ████████
-
-改为:
-  项目A / 需求1     （需求作为分组标题行）
-    设计            ████░░░░
-    开发            ░░░░████
-    测试            ░░░░░░██
+#person-timeline-scroll (overflow: auto)
+  └── div (minWidth: 128 + periods.length * 80)
+       ├── Header row (sticky top-0, height: 40px)
+       │    ├── w-32 (128px) "人员"
+       │    └── periods[] × CELL_W
+       └── Body rows[]
+            ├── Row: flex
+            │    ├── w-32 (128px) person name + color dot
+            │    └── div (relative, height: rowH)
+            │         ├── Week cells (absolute positioned)
+            │         └── Allocation bars (absolute positioned)
+            └── ...
 ```
 
-即：需求作为分组标题（灰色背景），阶段作为实际数据行。
+**导出要点：**
+- 容器有 `overflow: auto`，导出时需临时改为 `overflow: visible`
+- 左侧列宽 128px，sticky 固定
+- `rowH` 由 lane 数量决定，每 lane 36px
 
-### 3.5 按人排期视图
+### 3.2 按项目排期视图
 
-基本不变，色块文字改为 `需求名/阶段名 投入%`。
+```
+#proj-timeline-scroll (overflow: auto)
+  └── div (minWidth: 192 + periods.length * 80)
+       ├── Header row (sticky top-0, height: 40px)
+       │    ├── w-48 (192px) "项目 / 需求"
+       │    └── periods[] × CELL_W
+       └── Body rows[]
+            ├── Row: flex
+            │    ├── w-48 (192px) project/requirement name
+            │    └── div (relative, height: rowH)
+            │         ├── Week cells
+            │         └── Allocation bars (person name + effort%)
+            └── ...
+```
 
-### 3.6 空闲人力视图
+**导出要点：**
+- 左侧列宽 192px
+- 需求作为分组标题行（灰色背景）
+- 阶段作为子数据行
 
-不变，统计逻辑不变（见下节）。
+### 3.3 空闲人力视图
 
-## 4. 统计逻辑
+```
+#avail-scroll (overflow: auto, p-6 padding)
+  ├── h2 "空闲人力视图"
+  ├── p "绿色=空闲，红色=超载"
+  └── table (overflow-x: auto wrapper)
+       ├── thead
+       │    └── tr
+       │         ├── th "人员" (sticky left-0, w-24)
+       │         └── th[] × weeks
+       └── tbody
+            └── tr[] × persons
+                 ├── td person name (sticky left-0)
+                 └── td[] × weeks (带背景色)
+```
 
-### 4.1 核心规则
+**导出要点：**
+- 使用 `<table>` 结构，非 flex 布局
+- 容器有 `p-6` padding
+- 无时间范围裁剪（始终完整导出）
+- 底部有图例说明
 
-> 一个需求的多个阶段，在按需求统计时算作一个需求。
+## 4. 已知问题与修复
 
-具体含义：
-- **按人负荷统计**：同一需求的多个阶段的 effortPercent 独立累加（因为同一个人可能同时做同一需求的不同阶段）
-- **按项目统计**：一个需求下所有阶段的总工时 = 该需求的工时
-- **需求计数**：一个需求有 N 个阶段，仍算 1 个需求
+### 4.1 html-to-image 未声明为依赖
 
-### 4.2 空闲人力计算
+**现状：** 代码 `import { toPng } from 'html-to-image'` 但 package.json 无此依赖。
+**修复：** `npm install html-to-image` 并确认写入 package.json。
 
-不变：`某人某周负荷 = 该人该周所有 allocation 的 effortPercent 之和`
+### 4.2 空闲人力视图 padding 影响
 
-## 5. 默认位置
+**现状：** `#avail-scroll` 有 `p-6`（24px padding），导出图片包含空白边距。
+**方案：** 保持现状（padding 作为图片留白，视觉效果可接受）。
 
-新建排期时，开始日期默认为**当天所在周的周一**（而非点击的日期列）。
+### 4.3 自定义日期范围校验
 
-实现：`dayjs().startOf('isoWeek').format('YYYY-MM-DD')`
+**校验规则：**
+- 开始/结束日期必须为 YYYY-MM-DD 格式
+- 结束 ≥ 开始
+- 范围 ≤ 52 周
+- 不允许空值
 
-> 注意：这个改动仅影响「新建排期」弹窗的默认值，不影响拖拽和编辑。
+### 4.4 空视图处理
 
-## 6. 边界条件
+**规则：** 容器 scrollHeight < 80px 时，显示「当前视图为空，无法导出」。
 
-| 场景 | 处理 |
-|------|------|
-| 项目下无需求 | 排期弹窗提示「请先添加需求」 |
-| 需求下无阶段 | 排期弹窗提示「请先添加阶段」 |
-| 删除需求 | 级联删除所有阶段 + 关联 allocations |
-| 删除阶段 | 级联删除关联 allocations |
-| 删除项目 | 级联删除所有需求 → 阶段 → allocations |
-| 旧数据迁移 | 自动创建需求+阶段，用户无感 |
-| 导入旧格式 JSON | 迁移逻辑自动处理 |
+## 5. 文件名规范
 
-## 7. 时间范围
+```
+排期_按人排期_20260609.png
+排期_按项目排期_20260609.png
+排期_空闲人力_20260609.png
+```
 
-沿用现有 78 周（26+52），不变。
+## 6. 交互细节
+
+### 6.1 导出按钮位置
+
+- Header 组件右侧：「📷 导出图片」
+- 所有视图通用
+
+### 6.2 Modal 行为
+
+- ESC 关闭
+- 点击遮罩关闭
+- 导出中显示「导出中...」并禁用按钮
+- 导出成功触发 toast: 「📷 图片已保存」
+- 导出失败显示红色错误信息
+
+### 6.3 依赖注入方式
+
+```typescript
+// App.tsx 顶部
+import { toPng } from 'html-to-image';
+
+// ExportModal 组件内使用
+const dataUrl = await toPng(container, {
+  pixelRatio: resolution,
+  backgroundColor: '#ffffff',
+  cacheBust: true,
+  style: { overflow: 'visible', width: fullW + 'px', height: fullH + 'px' },
+});
+```
